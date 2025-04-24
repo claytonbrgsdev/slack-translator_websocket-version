@@ -1,0 +1,8 @@
+# Ignore arquivos e pastas sensíveis ou desnecessários
+.env
+*.sqlite3
+*.log
+/tmp/
+.bundle/
+/vendor/
+.DS_Store
