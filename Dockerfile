@@ -1,11 +1,8 @@
-# Dockerfile para aplicação Ruby sem frameworks
 FROM ruby:3.2.2-alpine
-
-# Definir diretório de trabalho
+RUN apk add --no-cache build-base
 WORKDIR /app
-
-# Copiar código da aplicação
+COPY Gemfile* ./
+RUN gem install bundler && bundle install
 COPY . .
-
-# Comando padrão para executar o script principal (altere app.rb se necessário)
-CMD ["ruby", "app.rb"]
+EXPOSE 4567
+CMD ["ruby", "server.rb"]
