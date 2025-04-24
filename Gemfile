@@ -10,6 +10,9 @@ gem "webrick"
 gem "http"
 
 # carregamento de variáveis de ambiente
+gem 'json'
+gem 'http'
+gem 'websocket-client-simple'
 gem "dotenv"
 
 # banco de dados SQLite + ORM Sequel

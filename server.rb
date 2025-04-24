@@ -14,11 +14,6 @@ server = WEBrick::HTTPServer.new(
 server.mount '/', WEBrick::HTTPServlet::FileHandler, public_dir
 
 # rotas dinâmicas
-server.mount_proc '/' do |req, res|
-  res.body = 'Hello World'
-  res['Content-Type'] = 'text/plain'
-end
-
 server.mount_proc '/status' do |req, res|
   res.body = { status: 'ok', time: Time.now }.to_json
   res['Content-Type'] = 'application/json'

@@ -1,66 +1,4 @@
-// Mock data for messages
-const mockMessages = [
-  {
-    id: "1",
-    text: "Good morning everyone! How's the project coming along?",
-    translated: "Bom dia a todos! Como está o andamento do projeto?",
-    user: {
-      id: "user1",
-      name: "John Smith",
-      avatar: "JS"
-    },
-    timestamp: new Date(Date.now() - 3600000).toISOString(),
-    isCurrentUser: false
-  },
-  {
-    id: "2",
-    text: "We're making good progress. The frontend is almost complete.",
-    translated: "Estamos fazendo um bom progresso. O frontend está quase completo.",
-    user: {
-      id: "user2",
-      name: "Maria Garcia",
-      avatar: "MG"
-    },
-    timestamp: new Date(Date.now() - 1800000).toISOString(),
-    isCurrentUser: false
-  },
-  {
-    id: "3",
-    text: "Great! I'll be reviewing the code this afternoon.",
-    translated: "Ótimo! Vou revisar o código esta tarde.",
-    user: {
-      id: "user1",
-      name: "John Smith",
-      avatar: "JS"
-    },
-    timestamp: new Date(Date.now() - 900000).toISOString(),
-    isCurrentUser: false
-  },
-  {
-    id: "4",
-    text: "Tenho trabalhado na integração da API. Deve estar pronto até amanhã.",
-    translated: "I've been working on the API integration. Should be done by tomorrow.",
-    user: {
-      id: "current-user",
-      name: "You",
-      avatar: "YO"
-    },
-    timestamp: new Date(Date.now() - 600000).toISOString(),
-    isCurrentUser: true
-  },
-  {
-    id: "5",
-    text: "Do we have the client meeting scheduled for Friday?",
-    translated: "Temos a reunião com o cliente agendada para sexta-feira?",
-    user: {
-      id: "user3",
-      name: "Alex Wong",
-      avatar: "AW"
-    },
-    timestamp: new Date(Date.now() - 300000).toISOString(),
-    isCurrentUser: false
-  }
-];
+// Espaço para configuração das mensagens do Slack
 
 // DOM Elements
 const originalMessagesList = document.getElementById('original-messages');
@@ -87,7 +25,7 @@ const notificationsBtn = document.getElementById('notifications-btn');
 
 // State
 let columnsSwapped = false;
-let messages = [...mockMessages];
+let messages = [];
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -392,47 +330,4 @@ function showToast(title, description) {
   }, 3000);
 }
 
-// Simulate receiving a new message every 45 seconds
-setInterval(() => {
-  const randomUsers = [
-    { id: 'user1', name: 'John Smith', avatar: 'JS' },
-    { id: 'user2', name: 'Maria Garcia', avatar: 'MG' },
-    { id: 'user3', name: 'Alex Wong', avatar: 'AW' }
-  ];
-  
-  const randomUser = randomUsers[Math.floor(Math.random() * randomUsers.length)];
-  const randomTexts = [
-    'Just checking in on the progress. Any updates?',
-    'Has anyone reviewed the latest pull request?',
-    'The client is very happy with our progress so far!',
-    'I think we should schedule a team meeting tomorrow.',
-    'Don\'t forget about the deadline next week.'
-  ];
-  
-  const randomText = randomTexts[Math.floor(Math.random() * randomTexts.length)];
-  const randomTranslation = `Tradução: ${randomText}`;
-  
-  const newMessage = {
-    id: Date.now().toString(),
-    text: randomText,
-    translated: randomTranslation,
-    user: randomUser,
-    timestamp: new Date().toISOString(),
-    isCurrentUser: false,
-    isNew: true
-  };
-  
-  messages = [...messages, newMessage];
-  renderMessages();
-  
-  // Remove new badge after 5 seconds
-  setTimeout(() => {
-    messages = messages.map(msg => {
-      if (msg.id === newMessage.id) {
-        return { ...msg, isNew: false };
-      }
-      return msg;
-    });
-    renderMessages();
-  }, 5000);
-}, 45000);
+// Aqui será implementada a conexão com a API do Slack via WebSocket
