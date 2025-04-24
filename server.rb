@@ -1,10 +1,19 @@
 require 'webrick'
+require 'webrick/httpservlet/filehandler'
 require 'json'
 
-port = 4567
+port = ENV.fetch('PORT', '4567').to_i
+public_dir = File.expand_path('public', __dir__)
 
-server = WEBrick::HTTPServer.new(Port: port)
+server = WEBrick::HTTPServer.new(
+  Port: port,
+  DocumentRoot: public_dir
+)
 
+# serve arquivos estáticos de public/
+server.mount '/', WEBrick::HTTPServlet::FileHandler, public_dir
+
+# rotas dinâmicas
 server.mount_proc '/' do |req, res|
   res.body = 'Hello World'
   res['Content-Type'] = 'text/plain'
@@ -17,6 +26,7 @@ end
 
 server.mount_proc '/translate' do |req, res|
   if req.request_method == 'POST'
+    # futura chamada ao Ollama
     res.body = { message: 'Endpoint de tradução ainda não implementado' }.to_json
   else
     res.body = { error: 'Use POST para enviar texto' }.to_json
@@ -29,7 +39,5 @@ trap 'INT' do
   server.shutdown
 end
 
-puts "Servidor rodando na :4567"
-server.start
-
+puts "Servidor rodando em http://localhost:#{port}"
 server.start
