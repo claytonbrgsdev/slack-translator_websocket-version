@@ -1,0 +1,1 @@
+# slack-translator_websocket-version
