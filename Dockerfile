@@ -1,5 +1,5 @@
 # Dockerfile para aplicação Ruby sem frameworks
-FROM ruby:3.2-alpine
+FROM ruby:3.2.2-alpine
 
 # Definir diretório de trabalho
 WORKDIR /app
