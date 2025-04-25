@@ -13,21 +13,52 @@ Dotenv.load
 # Variáveis globais para SSE
 $sse_clients = []
 
-# Wrapper para o Queue do SSE, implementa bytesize pra evitar erro
+# Wrapper completo para o Queue do SSE, implementa todos os métodos necessários
 class SSEBody
   def initialize(queue)
     @queue = queue
+    @content = ""
   end
 
   # WEBrick vai iterar chamando each para cada evento da fila
   def each
     loop do
-      yield @queue.pop
+      chunk = @queue.pop
+      @content = chunk
+      yield chunk
     end
   end
 
-  # WEBrick chama bytesize no body
+  # Métodos que o WEBrick pode chamar
   def bytesize
+    0
+  end
+  
+  # Implementa o método [] que o WEBrick tenta chamar com 1 ou 2 argumentos
+  def [](*args)
+    case args.size
+    when 1
+      range = args[0]
+      if range.is_a?(Range)
+        @content[range]
+      else
+        @content[range..-1]
+      end
+    when 2
+      # WEBrick pode chamar com offset e length como em [offset, length]
+      offset, length = args
+      @content[offset, length]
+    else
+      ""
+    end
+  end
+  
+  # Outros métodos que o WEBrick pode precisar
+  def size
+    0
+  end
+  
+  def length
     0
   end
 end
@@ -57,15 +88,8 @@ server.mount_proc '/events' do |req, res|
   # envia o evento inicial
   queue << "data: SSE Connected\n\n"
 
-  # Use Enumerator for streaming body and define bytesize for compatibility
-  body = Enumerator.new do |yielder|
-    loop do
-      yielder << queue.pop
-    end
-  end
-  def body.bytesize; 0; end
-
-  res.body = body
+  # Usa nossa classe SSEBody completa que implementa todos os métodos necessários
+  res.body = SSEBody.new(queue)
   # Keep track of this client queue
   $sse_clients << queue
   puts "[SSE SERVER] Cliente conectado (total: #{$sse_clients.size})"
