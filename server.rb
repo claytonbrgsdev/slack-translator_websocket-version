@@ -1,5 +1,7 @@
 require 'json'
 require 'dotenv'
+require 'webrick'
+require 'thread'
 require_relative 'slack_socket'
 require 'websocket-client-simple'
 require_relative 'slack_user_service'
@@ -7,6 +9,93 @@ require_relative 'models/message'
 
 # Carregar variáveis de ambiente
 Dotenv.load
+
+# Variáveis globais para SSE
+$sse_clients = []
+
+# Wrapper para o Queue do SSE, implementa bytesize pra evitar erro
+class SSEBody
+  def initialize(queue)
+    @queue = queue
+  end
+
+  # WEBrick vai iterar chamando each para cada evento da fila
+  def each
+    loop do
+      yield @queue.pop
+    end
+  end
+
+  # WEBrick chama bytesize no body
+  def bytesize
+    0
+  end
+end
+
+# Configurar o servidor WEBrick
+port = ENV.fetch('PORT', '4567').to_i
+public_dir = File.expand_path('public', __dir__)
+
+server = WEBrick::HTTPServer.new(
+  Port: port,
+  DocumentRoot: public_dir
+)
+
+# Servir arquivos estáticos
+server.mount('/', WEBrick::HTTPServlet::FileHandler, public_dir)
+
+# Endpoint SSE para comunicação em tempo real
+server.mount_proc '/events' do |req, res|
+  # Configurar headers para SSE com streaming chunked
+  res.chunked = true
+  res['Content-Type'] = 'text/event-stream'
+  res['Cache-Control'] = 'no-cache'
+  res['Connection'] = 'keep-alive'
+
+  # Cria uma fila Queue para eventos SSE
+  queue = Queue.new
+  # envia o evento inicial
+  queue << "data: SSE Connected\n\n"
+
+  # Use Enumerator for streaming body and define bytesize for compatibility
+  body = Enumerator.new do |yielder|
+    loop do
+      yielder << queue.pop
+    end
+  end
+  def body.bytesize; 0; end
+
+  res.body = body
+  # Keep track of this client queue
+  $sse_clients << queue
+  puts "[SSE SERVER] Cliente conectado (total: #{$sse_clients.size})"
+end
+
+# Função para enviar eventos SSE aos clientes
+def send_sse_event(data)
+  # Remover clientes nil
+  $sse_clients.reject! { |client| client.nil? }
+  
+  # Enviar para cada queue de Enumerator
+  $sse_clients.each do |queue|
+    begin
+      queue << "data: #{data.to_json}\n\n"
+      puts "[SSE SERVER] Evento enviado"
+    rescue => e
+      puts "[SSE SERVER] Removendo cliente desconectado: #{e.message}"
+      $sse_clients.delete(queue)
+    end
+  end
+end
+
+# Iniciar o servidor WEBrick em uma thread separada
+server_thread = Thread.new do
+  puts "[INIT] Servidor HTTP iniciado em http://localhost:#{port}"
+  server.start
+end
+
+# Trap de interrupção para encerrar o servidor corretamente
+trap('INT') { server.shutdown }
 
 puts "[INIT] Iniciando Slack Socket Mode"
 
@@ -103,6 +192,10 @@ begin
             
             # Em seguida, faça o log formatado:
             puts "[SLACK PAYLOAD] " + JSON.pretty_generate(event_payload)
+            
+            # Enviar o evento via SSE para o cliente
+            puts "[SSE TEST] Enviando evento: #{event_payload.to_json}"
+            send_sse_event(event_payload)
           end
         end
       end
