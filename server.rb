@@ -154,6 +154,8 @@ server.mount('/', WEBrick::HTTPServlet::FileHandler, public_dir)
 $last_conn = {}
 $last_conn_m = Mutex.new
 server.mount_proc '/events' do |req, res|
+  puts "[SSE SERVER] >>> /events called  (raw query=#{req.query_string})"
+  
   # Extrair o ID do cliente dos parâmetros da consulta
   query = req.query
   client_id = query['clientId'] || "anonymous-#{SecureRandom.uuid}"
