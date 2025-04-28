@@ -12,6 +12,9 @@ require_relative 'slack_user_service'
 require_relative 'models/message'
 require_relative 'ollama_client'
 
+# Force un-buffered STDOUT for real-time logs
+$stdout.sync = true
+
 # Carregar variáveis de ambiente
 Dotenv.load
 
@@ -64,6 +67,8 @@ class SSEBody
 
   # WEBrick vai iterar chamando each para cada evento da fila
   def each
+    puts "[SSE BODY] enumerator started in thread #{Thread.current.object_id}"
+    
     # Enfileira as duas primeiras mensagens imediatamente
     @queue << ": init\n\n"
     @queue << ": heartbeat\n\n"
