@@ -2,6 +2,8 @@ require 'rake'
 require 'net/http'
 require 'socket'
 require 'timeout'
+require 'open3'
+require 'uri'
 
 namespace :sse do
   desc "Run smoke test to verify SSE endpoint is working"
@@ -13,50 +15,90 @@ namespace :sse do
     
     puts "Starting WEBrick server on port #{port} for smoke test..."
     
+    # Create temporary log file
+    log_file = "test_server.log"
+    
     # Start server in a separate process
     pid = fork do
       ENV['PORT'] = port.to_s
-      # Redirect output to a temporary file
-      $stdout.reopen(File.new("test_server.log", "w"))
+      # Make sure server output is visible
+      $stdout.sync = true
+      $stderr.sync = true
+      # Redirect output to the log file
+      $stdout.reopen(File.new(log_file, "w"))
       $stderr.reopen($stdout)
       exec "ruby server.rb"
     end
     
     begin
       # Wait for server to start
+      success = false
+      server_up = false
+      
       Timeout.timeout(5) do
+        until server_up
+          sleep 0.2
+          begin
+            # Just try to connect to the server
+            Net::HTTP.get(URI.parse("http://localhost:#{port}/"))
+            server_up = true
+            puts "Server is up!"
+          rescue Errno::ECONNREFUSED, Errno::EADDRNOTAVAIL
+            # Server still starting
+          end
+        end
+        
+        # Simple test - try to read directly from connection with a timeout
+        puts "Testing SSE connection..."
+        
         begin
-          sleep 0.1
-          Net::HTTP.get(URI.parse("http://localhost:#{port}/"))
-          puts "Server is up!"
-          break
+          # We'll try to directly read from a socket connection
+          socket = TCPSocket.new('localhost', port)
+          
+          # Write a basic HTTP request for the SSE endpoint
+          socket.print "GET /events?clientId=smoke-test&t=#{Time.now.to_i} HTTP/1.1\r\n"
+          socket.print "Host: localhost:#{port}\r\n"
+          socket.print "Accept: text/event-stream\r\n"
+          socket.print "Cache-Control: no-cache\r\n"
+          socket.print "Connection: keep-alive\r\n\r\n"
+          
+          # Give the server a moment to respond
+          sleep 0.5
+          
+          # Use a timeout to read
+          response = ""
+          Timeout.timeout(2) do
+            # Read the response in small chunks until we find what we need
+            while line = socket.read(1024)
+              response += line
+              puts "Received chunk: #{line.size} bytes"
+              # If we've got what we need, we can stop
+              break if response.include?(': init')
+            end
+          end
+          
+          # Check if we received the init message
+          if response.include?(': init')
+            puts "\u2705 SSE smoke test PASSED: Received expected init message"
+            puts "Received:\n#{response.split("\r\n\r\n", 2).last}"
+            success = true
+          else
+            puts "\u274c SSE smoke test FAILED: Did not receive init in response"
+            puts "Response starts with: #{response[0..100].inspect}"
+          end
         rescue => e
-          retry
+          puts "\u274c SSE smoke test FAILED: #{e.class}: #{e.message}"
+        ensure
+          socket.close rescue nil
         end
       end
       
-      # Run curl to test SSE connection
-      puts "Testing SSE connection..."
-      
-      # Use IO.popen to capture the curl output
-      output = nil
-      Timeout.timeout(3) do
-        output = IO.popen("curl -s --no-buffer -N 'http://localhost:#{port}/events?clientId=smoke-test&t=#{Time.now.to_i}'", 'r') do |io|
-          first_line = io.readline
-          io.close_write
-          first_line
-        end
+      # Display server logs if the test failed
+      unless success
+        puts "\nServer logs:\n#{File.read(log_file)}" if File.exist?(log_file)
       end
       
-      # Check if we got the expected output
-      if output && output.start_with?(": init")
-        puts "✅ SSE smoke test PASSED: Received expected init message"
-        exit 0
-      else
-        puts "❌ SSE smoke test FAILED: Did not receive expected init message"
-        puts "Received: #{output}"
-        exit 1
-      end
+      exit(success ? 0 : 1)
     rescue Timeout::Error
       puts "❌ SSE smoke test FAILED: Timed out waiting for server response"
       exit 1
