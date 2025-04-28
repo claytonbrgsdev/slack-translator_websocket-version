@@ -202,9 +202,31 @@ server.mount_proc '/events' do |req, res|
   # Primeiro adicionamos a diretiva retry para o EventSource
   queue << "retry: 10000\n\n"
   
-  # Usa nossa classe SSEBody completa que implementa todos os métodos necessários
-  body = SSEBody.new(queue)
-  res.body = body
+  # NEW - simple inline enumerator instead of SSEBody
+  res.body = Enumerator.new do |y|
+    # send initial bytes immediately
+    y << ": init\n\n"
+    y << ": heartbeat\n\n"
+
+    # regular keep-alive on its own thread
+    keep_alive = Thread.new do
+      loop do
+        sleep 15
+        queue << ": heartbeat\n\n"
+      end
+    end
+
+    # flush everything that lands in the queue
+    loop do
+      chunk = queue.pop
+      y << chunk
+      puts "[SSE ENUM] -> #{chunk.bytesize}B"
+    end
+  rescue IOError, StandardError => e
+    puts "[SSE ENUM] stream closed: #{e.message}"
+  ensure
+    keep_alive.kill if keep_alive&.alive?
+  end
   
   # Registrar este cliente pelo ID antes de enviar evento inicial
   $sse_clients[client_id] = queue
