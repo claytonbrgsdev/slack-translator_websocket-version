@@ -389,10 +389,42 @@ function toggleTheme() {
 function previewTranslation() {
   if (messageInput.value.trim() === '') return;
   
-  // Simulate translation
-  const translatedText = `Tradução simulada para português: ${messageInput.value}`;
-  previewText.textContent = translatedText;
-  translationPreview.classList.remove('hidden');
+  // Add loading state
+  translateButton.classList.add('loading');
+  translateButton.disabled = true;
+  
+  // Get the input text and direction
+  const text = messageInput.value.trim();
+  const direction = document.getElementById('pt-to-en').checked ? 'pt-to-en' : 'en-to-pt';
+  
+  // Make API call to get translation
+  fetch('/translate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, direction })
+  })
+  .then(response => response.json())
+  .then(data => {
+    // Display translation preview
+    previewText.textContent = data.translation || `Translation preview: ${text}`;
+    translationPreview.classList.remove('hidden');
+    
+    // Remove loading state
+    translateButton.classList.remove('loading');
+    translateButton.disabled = false;
+  })
+  .catch(error => {
+    console.error('Error:', error);
+    showToast('Erro', 'Falha ao obter tradução');
+    
+    // Remove loading state on error
+    translateButton.classList.remove('loading');
+    translateButton.disabled = false;
+    
+    // Show fallback translation
+    previewText.textContent = `Tradução simulada para português: ${text}`;
+    translationPreview.classList.remove('hidden');
+  });
 }
 
 // Send message
@@ -404,7 +436,8 @@ function sendMessage() {
   const direction = document.getElementById('pt-to-en').checked ? 'pt-to-en' : 'en-to-pt';
   const channel = channelSelect.value || 'general';
   
-  // Disable button while processing
+  // Add loading state and disable button while processing
+  sendButton.classList.add('loading');
   sendButton.disabled = true;
   
   // First get translation
@@ -452,6 +485,10 @@ function sendMessage() {
       // Show toast notification
       showToast('Mensagem enviada', 'Sua mensagem foi traduzida e enviada com sucesso');
       
+      // Remove loading state
+      sendButton.classList.remove('loading');
+      sendButton.disabled = false;
+      
       // Remove new badge após 5 segundos
       setTimeout(() => {
         messages = messages.map(msg => {
@@ -464,12 +501,14 @@ function sendMessage() {
       }, 5000);
     } else {
       showToast('Erro', `Falha ao enviar: ${data.error || 'erro desconhecido'}`);
+      sendButton.classList.remove('loading');
       sendButton.disabled = false;
     }
   })
   .catch(error => {
     console.error('Error:', error);
     showToast('Erro', 'Falha na comunicação com o servidor');
+    sendButton.classList.remove('loading');
     sendButton.disabled = false;
   });
 }

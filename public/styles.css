@@ -758,3 +758,15 @@ input:checked + .toggle-slider:before {
     min-height: 4rem;
   }
 }
+
+/* Loading spinner for buttons */
+.action-btn.loading i { display:none; }
+.action-btn.loading::after {
+  content:'';
+  width:1rem;height:1rem;
+  border:2px solid var(--primary);
+  border-top-color:transparent;
+  border-radius:50%;
+  animation:spin .8s linear infinite;
+}
+@keyframes spin { to { transform:rotate(360deg);} }
