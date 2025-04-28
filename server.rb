@@ -64,6 +64,9 @@ class SSEBody
 
   # WEBrick vai iterar chamando each para cada evento da fila
   def each
+    # Send an initial heartbeat right away so the client receives data quickly
+    yield ": init\n\n"
+    
     # Enviar um comentário inicial para garantir que o browser mantenha a conexão
     yield ": heartbeat\n\n"
     
