@@ -366,6 +366,20 @@ function initEventListeners() {
       }
     }
   });
+  
+  // Highlight active channel when selected
+  channelSelect.addEventListener('change', () => {
+    highlightActiveChannel();
+  });
+  
+  // Initialize channel highlight
+  highlightActiveChannel();
+}
+
+// Highlight currently selected channel
+function highlightActiveChannel() {
+  // Add active class to channel select
+  channelSelect.classList.add('active');
 }
 
 // Toggle theme

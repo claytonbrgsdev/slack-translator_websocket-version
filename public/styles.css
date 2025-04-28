@@ -775,3 +775,9 @@ input:checked + .toggle-slider:before {
   animation:spin .8s linear infinite;
 }
 @keyframes spin { to { transform:rotate(360deg);} }
+
+/* Active channel highlighting */
+#channel-select.active { 
+  font-weight:700; 
+  border-color:var(--primary); 
+}
