@@ -716,6 +716,11 @@ input:checked + .toggle-slider:before {
   animation: progress 3s linear forwards;
 }
 
+/* Error toast styling */
+.toast.error .toast-content { background:#fef2f2; }
+.toast.error .toast-progress { background:#ef4444; }
+.toast.error .toast-content i { color:#ef4444; }
+
 @keyframes progress {
   0% {
     width: 100%;

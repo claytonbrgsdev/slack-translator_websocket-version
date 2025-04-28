@@ -415,7 +415,7 @@ function previewTranslation() {
   })
   .catch(error => {
     console.error('Error:', error);
-    showToast('Erro', 'Falha ao obter tradução');
+    showToast('Erro', 'Falha ao obter tradução', true);
     
     // Remove loading state on error
     translateButton.classList.remove('loading');
@@ -500,14 +500,14 @@ function sendMessage() {
         renderMessages();
       }, 5000);
     } else {
-      showToast('Erro', `Falha ao enviar: ${data.error || 'erro desconhecido'}`);
+      showToast('Erro', `Falha ao enviar: ${data.error || 'erro desconhecido'}`, true);
       sendButton.classList.remove('loading');
       sendButton.disabled = false;
     }
   })
   .catch(error => {
     console.error('Error:', error);
-    showToast('Erro', 'Falha na comunicação com o servidor');
+    showToast('Erro', 'Falha na comunicação com o servidor', true);
     sendButton.classList.remove('loading');
     sendButton.disabled = false;
   });
@@ -634,13 +634,28 @@ function formatTime(timestamp) {
 }
 
 // Show toast notification
-function showToast(title, description) {
+function showToast(title, description, isError = false) {
   const toastTitle = document.getElementById('toast-title');
   const toastDescription = document.getElementById('toast-description');
+  const toastIcon = toast.querySelector('.toast-content i');
   
   toastTitle.textContent = title;
   toastDescription.textContent = description;
   
+  // Remove any existing classes first
+  toast.classList.remove('hidden', 'error');
+  
+  // Add error class if specified
+  if (isError) {
+    toast.classList.add('error');
+    // Change icon to warning for errors
+    toastIcon.className = 'fa-solid fa-exclamation-circle';
+  } else {
+    // Use check icon for success
+    toastIcon.className = 'fa-solid fa-check-circle';
+  }
+  
+  // Show the toast
   toast.classList.remove('hidden');
   
   setTimeout(() => {
