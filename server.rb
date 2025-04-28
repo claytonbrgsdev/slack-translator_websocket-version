@@ -64,11 +64,9 @@ class SSEBody
 
   # WEBrick vai iterar chamando each para cada evento da fila
   def each
-    # Send an initial heartbeat right away so the client receives data quickly
-    yield ": init\n\n"
-    
-    # Enviar um comentário inicial para garantir que o browser mantenha a conexão
-    yield ": heartbeat\n\n"
+    # Enfileira as duas primeiras mensagens imediatamente
+    @queue << ": init\n\n"
+    @queue << ": heartbeat\n\n"
     
     # Enviar comentários periódicos para manter conexão viva
     keep_alive_thread = Thread.new do
@@ -76,7 +74,7 @@ class SSEBody
         sleep 15  # A cada 15 segundos
         begin
           break unless @active # Não enviar se a conexão já estiver inativa
-          yield ": heartbeat\n\n"
+          @queue << ": heartbeat\n\n"
         rescue => e
           # Thread será interrompida quando a conexão for fechada
           break
