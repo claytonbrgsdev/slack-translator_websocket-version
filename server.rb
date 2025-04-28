@@ -2,6 +2,7 @@ require 'json'
 require 'dotenv'
 require 'webrick'
 require 'thread'
+require 'http'
 require_relative 'slack_socket'
 require 'websocket-client-simple'
 require 'securerandom'
@@ -9,6 +10,7 @@ require 'sequel'
 require_relative 'db/config'
 require_relative 'slack_user_service'
 require_relative 'models/message'
+require_relative 'ollama_client'
 
 # Carregar variáveis de ambiente
 Dotenv.load
@@ -232,17 +234,38 @@ server.mount_proc '/events' do |req, res|
   end
 end
 
-# Stub endpoint for translation requests
+# Translation endpoint using Ollama
 server.mount_proc '/translate' do |req, res|
   payload = JSON.parse(req.body) rescue {}
+  text    = payload['text'].to_s.strip
+  dir     = payload['direction'] || 'en-to-pt'
+
+  translation = OllamaClient.translate(text, dir)
   res['Content-Type'] = 'application/json'
-  res.body = { translation: "echo: #{payload['text']}" }.to_json
+  res.body = { translation: translation }.to_json
 end
 
 # Health check endpoint
 server.mount_proc '/healthz' do |_req, res|
   res['Content-Type'] = 'application/json'
   res.body = { status: 'ok', sse_clients: $sse_clients.size }.to_json
+end
+
+# Send message to Slack endpoint
+server.mount_proc '/send' do |req, res|
+  payload = JSON.parse(req.body) rescue {}
+  channel = payload['channel']
+  text    = payload['text']
+
+  slack_token = ENV['SLACK_BOT_USER_OAUTH_TOKEN']
+  resp = HTTP.headers(
+           'Authorization' => "Bearer #{slack_token}",
+           'Content-Type'  => 'application/json'
+         ).post('https://slack.com/api/chat.postMessage',
+                json: { channel: channel, text: text })
+  data = JSON.parse(resp.to_s)
+  res['Content-Type'] = 'application/json'
+  res.body = { ok: data['ok'], error: data['error'] }.to_json
 end
 
 # Função para enviar eventos SSE aos clientes
