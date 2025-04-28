@@ -80,14 +80,9 @@ let setupSSE = () => {
       // Chamamos o manipulador original
       if (origOnError) origOnError.call(this, e);
       
-      // Adicionamos tratamento personalizado para evitar reconexões muito frequentes
-      const now = Date.now();
-      if (now - lastConnectionAttempt < 5000) {
-        connectionErrorOccurred = true;
-        console.log('[SSE CLIENT] Reconexão muito frequente detectada, fechando...');
-        eventSource.close();
-      }
-      lastConnectionAttempt = now;
+      // Log the error but let browser handle reconnect naturally
+      console.warn('[SSE CLIENT] onerror', e);
+      // Let the browser's native auto-reconnect handle it.
     };
     
     // Handler para quando a conexão for aberta
