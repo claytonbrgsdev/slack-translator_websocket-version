@@ -402,43 +402,81 @@ function previewTranslation() {
 
 // Send message
 function sendMessage() {
-  if (messageInput.value.trim() === '') return;
+  const text = messageInput.value.trim();
+  if (text === '') return;
   
-  const newMessage = {
-    id: Date.now().toString(),
-    text: messageInput.value,
-    translated: `English translation: ${messageInput.value}`,
-    user: {
-      id: 'current-user',
-      name: 'You',
-      avatar: 'YO'
-    },
-    timestamp: new Date().toISOString(),
-    isCurrentUser: true,
-    isNew: true
-  };
+  // Get selected direction from settings
+  const direction = document.getElementById('pt-to-en').checked ? 'pt-to-en' : 'en-to-pt';
+  const channel = channelSelect.value || 'general';
   
-  messages = [...messages, newMessage];
-  renderMessages();
-  
-  // Clear input and preview
-  messageInput.value = '';
-  translationPreview.classList.add('hidden');
+  // Disable button while processing
   sendButton.disabled = true;
   
-  // Show toast notification
-  showToast('Mensagem enviada', 'Sua mensagem foi traduzida e enviada com sucesso');
-  
-  // Remove new badge após 5 segundos
-  setTimeout(() => {
-    messages = messages.map(msg => {
-      if (msg.id === newMessage.id) {
-        return { ...msg, isNew: false };
-      }
-      return msg;
+  // First get translation
+  fetch('/translate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, direction })
+  })
+  .then(response => response.json())
+  .then(data => {
+    const translation = data.translation;
+    
+    // Now send to Slack
+    return fetch('/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel, text: translation })
     });
-    renderMessages();
-  }, 5000);
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.ok) {
+      // Add to local messages
+      const newMessage = {
+        id: Date.now().toString(),
+        text: text,
+        translated: data.translation || `Translation sent to Slack`,
+        user: {
+          id: 'current-user',
+          name: 'You',
+          avatar: 'YO'
+        },
+        timestamp: new Date().toISOString(),
+        isCurrentUser: true,
+        isNew: true
+      };
+      
+      messages = [...messages, newMessage];
+      renderMessages();
+      
+      // Clear input and preview
+      messageInput.value = '';
+      translationPreview.classList.add('hidden');
+      
+      // Show toast notification
+      showToast('Mensagem enviada', 'Sua mensagem foi traduzida e enviada com sucesso');
+      
+      // Remove new badge após 5 segundos
+      setTimeout(() => {
+        messages = messages.map(msg => {
+          if (msg.id === newMessage.id) {
+            return { ...msg, isNew: false };
+          }
+          return msg;
+        });
+        renderMessages();
+      }, 5000);
+    } else {
+      showToast('Erro', `Falha ao enviar: ${data.error || 'erro desconhecido'}`);
+      sendButton.disabled = false;
+    }
+  })
+  .catch(error => {
+    console.error('Error:', error);
+    showToast('Erro', 'Falha na comunicação com o servidor');
+    sendButton.disabled = false;
+  });
 }
 
 // Render messages
