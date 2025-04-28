@@ -202,31 +202,56 @@ server.mount_proc '/events' do |req, res|
   # Primeiro adicionamos a diretiva retry para o EventSource
   queue << "retry: 10000\n\n"
   
-  # NEW - simple inline enumerator instead of SSEBody
-  res.body = Enumerator.new do |y|
-    # send initial bytes immediately
-    y << ": init\n\n"
-    y << ": heartbeat\n\n"
-
-    # regular keep-alive on its own thread
+  # Create a streaming body object that implements the methods WEBrick needs
+  body = Object.new
+  
+  # Add methods WEBrick requires
+  body.instance_variable_set(:@queue, queue)
+  body.instance_variable_set(:@active, true)
+  
+  # Define instance methods on the body object
+  def body.each
+    puts "[SSE ENUM] enumerator started"
+    
+    # Send initial bytes immediately
+    yield ": init\n\n"
+    puts "[SSE ENUM] -> 7B (init)"
+    
+    yield ": heartbeat\n\n"
+    puts "[SSE ENUM] -> 12B (first heartbeat)"
+    
+    # Regular keep-alive on its own thread
     keep_alive = Thread.new do
       loop do
         sleep 15
-        queue << ": heartbeat\n\n"
+        @queue << ": heartbeat\n\n" if @active
       end
     end
-
-    # flush everything that lands in the queue
-    loop do
-      chunk = queue.pop
-      y << chunk
-      puts "[SSE ENUM] -> #{chunk.bytesize}B"
+    
+    # Flush everything that lands in the queue
+    begin
+      loop do
+        chunk = @queue.pop
+        yield chunk
+        puts "[SSE ENUM] -> #{chunk.bytesize}B"
+      end
+    rescue IOError, StandardError => e
+      puts "[SSE ENUM] stream closed: #{e.message}"
+    ensure
+      @active = false
+      keep_alive.kill if keep_alive&.alive?
     end
-  rescue IOError, StandardError => e
-    puts "[SSE ENUM] stream closed: #{e.message}"
-  ensure
-    keep_alive.kill if keep_alive&.alive?
   end
+  
+  # Required methods for WEBrick's response body handling
+  def body.to_s; ""; end
+  def body.bytesize; 0; end
+  def body.size; 0; end
+  def body.length; 0; end
+  def body.[](range); ""; end
+
+  # Assign the body to the response
+  res.body = body
   
   # Registrar este cliente pelo ID antes de enviar evento inicial
   $sse_clients[client_id] = queue
