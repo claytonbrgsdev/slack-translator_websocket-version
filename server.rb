@@ -167,15 +167,8 @@ server.mount_proc '/events' do |req, res|
   $last_conn_m.synchronize { $last_conn[client_id] = now }
   
   # Verificar se este cliente já tem uma conexão
-  if $sse_clients.key?(client_id)
-    begin
-      # Remover conexão antiga para evitar reconexões constantes
-      old_queue = $sse_clients[client_id]
-      old_queue << "data: {\"type\":\"close\",\"message\":\"Connection replaced\"}\n\n"
-      puts "[SSE SERVER] Cliente já conectado: #{client_id}, fechando conexão anterior"
-    rescue => e
-      puts "[SSE SERVER] Erro ao fechar conexão antiga: #{e.message}"
-    end
+  if (old_queue = $sse_clients.delete(client_id))
+    puts "[SSE SERVER] Cliente duplicado: #{client_id} — descartando fila antiga"
   end
   
   # Configurar headers para SSE com streaming chunked
