@@ -144,29 +144,25 @@ server = WEBrick::HTTPServer.new(
 server.mount('/', WEBrick::HTTPServlet::FileHandler, public_dir)
 
 # Endpoint SSE para comunicação em tempo real com anti-loop
+$last_conn = {}
+$last_conn_m = Mutex.new
 server.mount_proc '/events' do |req, res|
   # Extrair o ID do cliente dos parâmetros da consulta
   query = req.query
   client_id = query['clientId'] || "anonymous-#{SecureRandom.uuid}"
   timestamp = query['t'] || Time.now.to_i
   
-  # Anti-loop: verificar timestamps de reconexão muito frequentes
-  client_key = "#{client_id}_last_conn"
-  last_connection_time = Thread.current[client_key]
-  
+  # Anti-loop: verificar timestamps de reconexão muito frequentes (global)
   now = Time.now.to_i
-  
+  last_connection_time = $last_conn_m.synchronize { $last_conn[client_id] }
   if last_connection_time && (now - last_connection_time < 2)
     puts "[SSE SERVER] Reconexão muito frequente detectada para #{client_id}, bloqueando brevemente..."
-    # Enviar resposta 429 para reconexões muito frequentes
     res.status = 429
     res['Retry-After'] = '5'
     res.body = "Too many reconnections, please wait a few seconds"
     return
   end
-  
-  # Registramos o timestamp desta tentativa
-  Thread.current[client_key] = now
+  $last_conn_m.synchronize { $last_conn[client_id] = now }
   
   # Verificar se este cliente já tem uma conexão
   if $sse_clients.key?(client_id)
@@ -241,6 +237,12 @@ server.mount_proc '/translate' do |req, res|
   payload = JSON.parse(req.body) rescue {}
   res['Content-Type'] = 'application/json'
   res.body = { translation: "echo: #{payload['text']}" }.to_json
+end
+
+# Health check endpoint
+server.mount_proc '/healthz' do |_req, res|
+  res['Content-Type'] = 'application/json'
+  res.body = { status: 'ok', sse_clients: $sse_clients.size }.to_json
 end
 
 # Função para enviar eventos SSE aos clientes
