@@ -87,6 +87,7 @@ class SSEBody
         chunk = @queue.pop
         @content = chunk
         yield chunk
+        puts "[SSE BODY] → chunk #{chunk.bytesize}B"
       end
     rescue => e
       # Capturar erros quando a conexão fechar
@@ -94,6 +95,7 @@ class SSEBody
     ensure
       # Marcar como inativo quando a conexão encerrar
       @active = false
+      puts "[SSE BODY] stream closed by client"
       # Garantir que o thread de keep-alive seja encerrado
       keep_alive_thread.kill if keep_alive_thread.alive?
     end
