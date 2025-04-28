@@ -26,6 +26,7 @@ const notificationsBtn = document.getElementById('notifications-btn');
 // State
 let columnsSwapped = false;
 let messages = [];
+let autoTranslateEnabled = false; // Auto-translate toggle state
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -99,7 +100,59 @@ let setupSSE = () => {
           console.log('[SSE CLIENT] Heartbeat recebido');
         } else {
           console.log('[SSE CLIENT] Received:', event.data);
-          console.log('[SSE TEST] Recebido no cliente:', event.data);
+          
+          // Try to parse the message as JSON
+          if (event.data && event.data.startsWith('{')) {
+            const data = JSON.parse(event.data);
+            
+            // Process Slack messages
+            if (data.type === 'slack_message' && data.data) {
+              const messageData = data.data;
+              
+              // Create message object
+              const newMessage = {
+                id: messageData.id || Date.now().toString(),
+                text: messageData.text || 'No text',
+                user: {
+                  id: messageData.user?.id || 'unknown',
+                  name: messageData.user?.name || 'Unknown User',
+                  avatar: messageData.user?.avatar || (messageData.user?.name || 'UN').substring(0, 2).toUpperCase()
+                },
+                timestamp: messageData.timestamp || new Date().toISOString(),
+                isCurrentUser: false,
+                isNew: true
+              };
+              
+              // Auto-translate if enabled
+              if (autoTranslateEnabled && newMessage.text) {
+                console.log('[AUTO-TRANSLATE] Translating message:', newMessage.text);
+                fetchTranslation(newMessage.text)
+                  .then(translation => {
+                    newMessage.translated = translation;
+                    // Update the message in the array
+                    const index = messages.findIndex(m => m.id === newMessage.id);
+                    if (index !== -1) {
+                      messages[index].translated = translation;
+                      renderMessages();
+                    }
+                  })
+                  .catch(error => {
+                    console.error('[AUTO-TRANSLATE] Error:', error);
+                  });
+              }
+              
+              // Add to messages array
+              messages.unshift(newMessage);
+              
+              // Only keep the latest 50 messages
+              if (messages.length > 50) {
+                messages = messages.slice(0, 50);
+              }
+              
+              // Render updated messages
+              renderMessages();
+            }
+          }
         }
       } catch (e) {
         console.error('[SSE CLIENT] Erro ao processar mensagem:', e);
@@ -164,57 +217,70 @@ function initSlackEventSource() {
         
         // Evitar processamento de mensagens duplicadas
         if (processedMessages.has(messageId)) {
-          return;
+          return; // Skip already processed messages
         }
+        
+        // Mark as processed
         processedMessages.add(messageId);
         
-        // Limitar tamanho do cache de mensagens
-        if (processedMessages.size > 100) {
-          const entriesToRemove = processedMessages.size - 50;
-          const iterator = processedMessages.values();
-          for (let i = 0; i < entriesToRemove; i++) {
-            processedMessages.delete(iterator.next().value);
+        // Create user object
+        let userInfo = {
+          id: 'unknown',
+          name: 'Usuário Slack',
+          avatar: 'US'
+        };
+        
+        // Get user info if available
+        if (data.user) {
+          if (typeof data.user === 'string') {
+            userInfo = {
+              id: data.user,
+              name: `Usuário ${data.user.slice(-4)}`,
+              avatar: data.user.substring(0, 2).toUpperCase()
+            };
+          } else if (typeof data.user === 'object' && data.user !== null) {
+            userInfo = {
+              id: data.user.id || 'unknown',
+              name: data.user.name || 'Usuário Slack',
+              avatar: data.user.avatar || data.user.name?.substring(0, 2).toUpperCase() || 'US'
+            };
           }
         }
         
-        // Criar um objeto de mensagem com valores padrão seguros
+        // Create message object
         const message = {
           id: messageId,
           text: data.text || 'Mensagem sem texto',
           translated: data.translated || null,
           timestamp: data.timestamp || new Date().toISOString(),
+          user: userInfo,
           isCurrentUser: false,
-          isNew: true,
-          user: {
-            id: 'unknown',
-            name: 'Usuário Slack',
-            avatar: 'US'
-          }
+          isNew: true
         };
         
-        // Processar informações do usuário com segurança
-        if (data.user) {
-          if (typeof data.user === 'string') {
-            message.user = {
-              id: data.user,
-              name: `Usuário ${data.user.slice(-4)}`, 
-              avatar: 'U'
-            };
-          } else if (typeof data.user === 'object' && data.user !== null) {
-            message.user = {
-              id: data.user.id || 'unknown',
-              name: data.user.name || 'Usuário Slack',
-              avatar: data.user.avatar || 'US'
-            };
-          }
+        // Auto-translate if enabled and no translation already exists
+        if (autoTranslateEnabled && message.text && !message.translated) {
+          console.log('[AUTO-TRANSLATE] Translating message:', message.text);
+          fetchTranslation(message.text)
+            .then(translation => {
+              message.translated = translation;
+              renderMessages(); // Update UI with translation
+            })
+            .catch(error => {
+              console.error('[AUTO-TRANSLATE] Error:', error);
+            });
         }
         
-        // Só processar mensagens com texto
-        if (data.text) {
-          fetchTranslation(message);
-        } else {
-          console.log('Mensagem sem texto ignorada');
+        // Add to messages array
+        messages.unshift(message);
+        
+        // Limit array size
+        if (messages.length > 50) {
+          messages = messages.slice(0, 50);
         }
+        
+        // Render messages
+        renderMessages();
       } catch (error) {
         console.error('Erro ao processar mensagem SSE:', error);
       }
@@ -325,6 +391,20 @@ function initEventListeners() {
     directionOptions.style.display = e.target.checked ? 'none' : 'block';
   });
   
+  // Auto translate toggle
+  const autoTranslateToggle = document.getElementById('auto-translate-toggle');
+  autoTranslateToggle.addEventListener('change', (e) => {
+    autoTranslateEnabled = e.target.checked;
+    localStorage.setItem('autoTranslate', autoTranslateEnabled ? 'true' : 'false');
+  });
+  
+  // Load auto-translate preference
+  const savedAutoTranslate = localStorage.getItem('autoTranslate');
+  if (savedAutoTranslate === 'true') {
+    autoTranslateToggle.checked = true;
+    autoTranslateEnabled = true;
+  }
+  
   // Tab switching
   tabButtons.forEach(button => {
     button.addEventListener('click', () => {
@@ -399,6 +479,19 @@ function toggleTheme() {
   localStorage.setItem('theme', isDark ? 'light' : 'dark');
 }
 
+// Helper function to fetch translation
+function fetchTranslation(text) {
+  const direction = document.getElementById('pt-to-en').checked ? 'pt-to-en' : 'en-to-pt';
+  
+  return fetch('/translate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, direction })
+  })
+  .then(response => response.json())
+  .then(data => data.translation || `Translation preview: ${text}`);
+}
+
 // Preview translation
 function previewTranslation() {
   if (messageInput.value.trim() === '') return;
@@ -407,38 +500,32 @@ function previewTranslation() {
   translateButton.classList.add('loading');
   translateButton.disabled = true;
   
-  // Get the input text and direction
+  // Get the input text
   const text = messageInput.value.trim();
-  const direction = document.getElementById('pt-to-en').checked ? 'pt-to-en' : 'en-to-pt';
   
-  // Make API call to get translation
-  fetch('/translate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, direction })
-  })
-  .then(response => response.json())
-  .then(data => {
-    // Display translation preview
-    previewText.textContent = data.translation || `Translation preview: ${text}`;
-    translationPreview.classList.remove('hidden');
-    
-    // Remove loading state
-    translateButton.classList.remove('loading');
-    translateButton.disabled = false;
-  })
-  .catch(error => {
-    console.error('Error:', error);
-    showToast('Erro', 'Falha ao obter tradução', true);
-    
-    // Remove loading state on error
-    translateButton.classList.remove('loading');
-    translateButton.disabled = false;
-    
-    // Show fallback translation
-    previewText.textContent = `Tradução simulada para português: ${text}`;
-    translationPreview.classList.remove('hidden');
-  });
+  // Use the fetchTranslation helper
+  fetchTranslation(text)
+    .then(translation => {
+      // Display translation preview
+      previewText.textContent = translation;
+      translationPreview.classList.remove('hidden');
+      
+      // Remove loading state
+      translateButton.classList.remove('loading');
+      translateButton.disabled = false;
+    })
+    .catch(error => {
+      console.error('Error:', error);
+      showToast('Erro', 'Falha ao obter tradução', true);
+      
+      // Remove loading state on error
+      translateButton.classList.remove('loading');
+      translateButton.disabled = false;
+      
+      // Show fallback translation
+      previewText.textContent = `Tradução simulada para português: ${text}`;
+      translationPreview.classList.remove('hidden');
+    });
 }
 
 // Send message
