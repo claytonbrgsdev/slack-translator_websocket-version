@@ -248,7 +248,25 @@ server.mount_proc '/events' do |req, res|
   def body.bytesize; 0; end
   def body.size; 0; end
   def body.length; 0; end
-  def body.[](range); ""; end
+  def body.active?; @active; end
+  
+  # Handle both single and double argument forms for []
+  def body.[](*args)
+    case args.size
+    when 1
+      range = args[0]
+      if range.is_a?(Range)
+        ""
+      else
+        ""
+      end
+    when 2
+      # WEBrick can call with offset and length
+      ""
+    else
+      ""
+    end
+  end
 
   # Assign the body to the response
   res.body = body
