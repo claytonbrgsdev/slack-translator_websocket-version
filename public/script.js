@@ -1,4 +1,4 @@
-// Espaço para configuração das mensagens do Slack
+// Configuração das mensagens do Slack e interação com o servidor
 
 // DOM Elements
 const originalMessagesList = document.getElementById('original-messages');
@@ -31,6 +31,7 @@ let messages = [];
 document.addEventListener('DOMContentLoaded', () => {
   renderMessages();
   initEventListeners();
+  initSSEConnection(); // Iniciar conexão SSE com o servidor
   
   // Check for saved theme preference
   const savedTheme = localStorage.getItem('theme');
@@ -41,6 +42,251 @@ document.addEventListener('DOMContentLoaded', () => {
     darkThemeToggle.checked = true;
   }
 });
+
+// Variáveis globais para gerenciar a conexão SSE
+let sseConnection = null;
+let reconnectAttempts = 0;
+let maxReconnectAttempts = 5;
+let reconnectTimeout = null;
+let connectionActive = false;
+let connectionErrorOccurred = false;
+let lastConnectionAttempt = 0;
+let sessionId = Date.now() + '-' + Math.random().toString(36).substring(2, 10);
+
+// Implementação definitiva para gerenciar conexão SSE e evitar loop
+let setupSSE = () => {
+  // Desativamos a função initSSEConnection original 
+  // e substituímos por um EventSource único e controlado
+  if (window._sseSetupComplete) {
+    console.log('[SSE CLIENT] Configuração já realizada');
+    return;
+  }
+  
+  console.log('[SSE CLIENT] Configurando conexão SSE singular');
+  window._sseSetupComplete = true;
+  
+  // Criar apenas uma instância de EventSource que será mantida enquanto a página estiver aberta
+  try {
+    // Adicionar timestamp para evitar cache do navegador
+    const url = `/events?clientId=${sessionId}&t=${Date.now()}`;
+    
+    // Configurar objeto EventSource com retry time mais longo
+    const eventSource = new EventSource(url);
+    
+    // Modificar o retry time padrão (que é curto demais em alguns navegadores)
+    // Isso evita reconexões muito agressivas
+    let origOnError = eventSource.onerror;
+    eventSource.onerror = function(e) {
+      // Chamamos o manipulador original
+      if (origOnError) origOnError.call(this, e);
+      
+      // Adicionamos tratamento personalizado para evitar reconexões muito frequentes
+      const now = Date.now();
+      if (now - lastConnectionAttempt < 5000) {
+        connectionErrorOccurred = true;
+        console.log('[SSE CLIENT] Reconexão muito frequente detectada, fechando...');
+        eventSource.close();
+      }
+      lastConnectionAttempt = now;
+    };
+    
+    // Handler para quando a conexão for aberta
+    eventSource.addEventListener('open', () => {
+      console.log('[SSE CLIENT] Connection opened');
+      connectionActive = true;
+      lastConnectionAttempt = Date.now();
+    });
+    
+    // Handler para receber mensagens (incluindo heartbeats)
+    eventSource.addEventListener('message', (event) => {
+      try {
+        if (event.data.includes('heartbeat')) {
+          console.log('[SSE CLIENT] Heartbeat recebido');
+        } else {
+          console.log('[SSE CLIENT] Received:', event.data);
+          console.log('[SSE TEST] Recebido no cliente:', event.data);
+        }
+      } catch (e) {
+        console.error('[SSE CLIENT] Erro ao processar mensagem:', e);
+      }
+    });
+    
+    // Armazenar referência global
+    window.sseConnection = eventSource;
+    console.log('[SSE CLIENT] Conexão EventSource criada e configurada com sucesso');
+    
+    // Adicionar evento para quando a página for fechada
+    window.addEventListener('beforeunload', () => {
+      console.log('[SSE CLIENT] Fechando conexão antes de sair da página');
+      if (window.sseConnection) {
+        window.sseConnection.close();
+        window.sseConnection = null;
+      }
+    });
+  } catch (e) {
+    console.error('[SSE CLIENT] Erro fatal ao configurar EventSource:', e);
+    window._sseSetupComplete = false;
+  }
+};
+
+// Função para estabelecer conexão SSE (agora apenas chama setupSSE)
+function initSSEConnection() {
+  setupSSE();
+}
+
+// Implementação simplificada e robusta para eventos do Slack via SSE
+function initSlackEventSource() {
+  console.log('Iniciando fonte de eventos SSE');
+  
+  // Armazenar mensagens já processadas para evitar duplicações
+  const processedMessages = new Set();
+  
+  try {
+    // Criar conexão SSE
+    const eventSource = new EventSource('/stream');
+    
+    // Manipular evento de conexão estabelecida
+    eventSource.addEventListener('open', () => {
+      console.log('Conexão SSE estabelecida');
+    });
+    
+    // Manipular mensagens recebidas
+    eventSource.addEventListener('message', (event) => {
+      console.log('Evento SSE recebido:', event.data);
+      
+      try {
+        // Tentar processar a mensagem como JSON
+        const data = JSON.parse(event.data);
+        
+        // Verificar se é uma mensagem de status de conexão
+        if (data.type === 'connected') {
+          console.log('Status de conexão:', data.message);
+          return;
+        }
+        
+        // Gerar um ID único para a mensagem se não existir
+        const messageId = data.id || `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+        
+        // Evitar processamento de mensagens duplicadas
+        if (processedMessages.has(messageId)) {
+          return;
+        }
+        processedMessages.add(messageId);
+        
+        // Limitar tamanho do cache de mensagens
+        if (processedMessages.size > 100) {
+          const entriesToRemove = processedMessages.size - 50;
+          const iterator = processedMessages.values();
+          for (let i = 0; i < entriesToRemove; i++) {
+            processedMessages.delete(iterator.next().value);
+          }
+        }
+        
+        // Criar um objeto de mensagem com valores padrão seguros
+        const message = {
+          id: messageId,
+          text: data.text || 'Mensagem sem texto',
+          translated: data.translated || null,
+          timestamp: data.timestamp || new Date().toISOString(),
+          isCurrentUser: false,
+          isNew: true,
+          user: {
+            id: 'unknown',
+            name: 'Usuário Slack',
+            avatar: 'US'
+          }
+        };
+        
+        // Processar informações do usuário com segurança
+        if (data.user) {
+          if (typeof data.user === 'string') {
+            message.user = {
+              id: data.user,
+              name: `Usuário ${data.user.slice(-4)}`, 
+              avatar: 'U'
+            };
+          } else if (typeof data.user === 'object' && data.user !== null) {
+            message.user = {
+              id: data.user.id || 'unknown',
+              name: data.user.name || 'Usuário Slack',
+              avatar: data.user.avatar || 'US'
+            };
+          }
+        }
+        
+        // Só processar mensagens com texto
+        if (data.text) {
+          fetchTranslation(message);
+        } else {
+          console.log('Mensagem sem texto ignorada');
+        }
+      } catch (error) {
+        console.error('Erro ao processar mensagem SSE:', error);
+      }
+    });
+    
+    // Manipular erros de conexão
+    eventSource.addEventListener('error', (error) => {
+      console.error('Erro na conexão SSE. Tentando reconectar...', error);
+    });
+    
+    // Função global para testar o sistema SSE do console do navegador
+    window.testSSE = async () => {
+      try {
+        const response = await fetch('/debug/send-test-event');
+        if (response.ok) {
+          console.log('Evento de teste SSE enviado');
+          const data = await response.json();
+          console.log('Resposta:', data);
+        } else {
+          console.error('Falha ao enviar evento de teste:', await response.text());
+        }
+      } catch (error) {
+        console.error('Erro ao enviar evento de teste:', error);
+      }
+    };
+    
+    return eventSource;
+  } catch (error) {
+    console.error('Erro ao criar EventSource:', error);
+    return null;
+  }
+}
+
+// Função para traduzir mensagens
+async function fetchTranslation(message) {
+  try {
+    const response = await fetch('/translate', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ text: message.text })
+    });
+    
+    const data = await response.json();
+    
+    // Atualizar a mensagem com a tradução
+    message.translated = data.translation || data.message || 'Erro ao traduzir';
+    
+    // Adicionar à lista de mensagens e renderizar
+    messages = [...messages, message];
+    renderMessages();
+    
+    // Remover a flag 'isNew' após alguns segundos
+    setTimeout(() => {
+      messages = messages.map(msg => {
+        if (msg.id === message.id) {
+          return { ...msg, isNew: false };
+        }
+        return msg;
+      });
+      renderMessages();
+    }, 5000);
+  } catch (err) {
+    console.error('Erro ao traduzir mensagem:', err);
+  }
+}
 
 // Event Listeners
 function initEventListeners() {
