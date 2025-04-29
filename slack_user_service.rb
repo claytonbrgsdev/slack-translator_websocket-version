@@ -32,7 +32,7 @@ module SlackUserService
       # Sleep for a bit to avoid accidentally running twice
       sleep 300
     end
-  end.tap { |t| t.abort_on_exception = true; t.name = 'avatar-prune'; t.daemon = true }
+  end.tap { |t| t.abort_on_exception = true; t.name = 'avatar-prune' }
   # Busca o perfil de um usuário do Slack pelo ID
   # @param user_id [String] ID do usuário no Slack
   # @return [Hash, nil] Objeto de perfil do usuário ou nil em caso de erro
