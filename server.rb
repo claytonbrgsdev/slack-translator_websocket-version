@@ -117,23 +117,33 @@ server.mount_proc '/events' do |req, res|
   # Primeiro adicionamos a diretiva retry para o EventSource
   queue << "retry: 10000\n\n"
   
-  # Simple streaming enumerator — no extra methods
-  res.body = Enumerator.new do |y|
+  # Create a minimal streaming object that implements what WEBrick needs
+  body = Object.new
+  
+  # Simple streaming enumerator
+  def body.each
     puts "[SSE ENUM] started"
 
     # send first bytes immediately
-    y << ": init\n\n"
+    yield ": init\n\n"
     puts "[SSE ENUM] -> 7B (init)"
 
     # heartbeat every 15 s
     loop do
       sleep 15
-      y << ": heartbeat\n\n"
+      yield ": heartbeat\n\n"
       puts "[SSE ENUM] -> 12B (heartbeat)"
     end
   rescue IOError => e
     puts "[SSE ENUM] closed: #{e.class} #{e.message}"
   end
+  
+  # Minimal required methods for WEBrick
+  def body.to_s; ""; end
+  def body.bytesize; 0; end
+  
+  # Assign the body to the response
+  res.body = body
   
   # Registrar este cliente pelo ID antes de enviar evento inicial
   $sse_clients[client_id] = queue
