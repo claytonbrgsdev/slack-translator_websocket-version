@@ -15,6 +15,9 @@ require_relative 'ollama_client'
 # Force un-buffered STDOUT for real-time logs
 $stdout.sync = true
 
+# Queue for processing Slack events asynchronously - unbounded to prevent stalls
+EVENT_QUEUE = Queue.new
+
 # Carregar variáveis de ambiente
 Dotenv.load
 
@@ -55,127 +58,132 @@ $backoff = 1
 # Variáveis globais para SSE
 $sse_clients = {}
 
+# Verify Ollama is running before proceeding
+begin
+  # Ollama doesn't have a /api/health endpoint, just check the root endpoint
+  health = HTTP.get("#{OllamaClient::HOST}")
+  raise unless health.status.success?
+  puts "[INIT] ✅ Connected to Ollama at #{OllamaClient::HOST}"
+rescue => e
+  puts "[INIT] ❌ Cannot reach Ollama at #{OllamaClient::HOST} – please start ollama serve"
+  puts "[INIT] Error: #{e.message}"
+  exit 1
+end
+
 # Configurar o servidor WEBrick
 port = ENV.fetch('PORT', '4567').to_i
 public_dir = File.expand_path('public', __dir__)
 
 server = WEBrick::HTTPServer.new(
   Port: port,
-  DocumentRoot: public_dir
+  DocumentRoot: public_dir,
+  # Enable multi-threading to prevent blocking during long translations
+  StartCallback: proc { puts "[WEBrick] Thread pool size: 10" },
+  RequestCallback: proc { |req, res| },
+  MaxClients: 10,
+  DoNotReverseLookup: true
 )
 
 # Servir arquivos estáticos
 server.mount('/', WEBrick::HTTPServlet::FileHandler, public_dir)
 
-# Endpoint SSE para comunicação em tempo real com anti-loop
-$last_conn = {}
-$last_conn_m = Mutex.new
+# Server-Sent Events endpoint with direct WEBrick streaming implementation
 server.mount_proc '/events' do |req, res|
-  puts "[SSE SERVER] >>> /events called  (raw query=#{req.query_string})"
-  puts "[SSE DEBUG] /events hit — IP=#{req.peeraddr[3]}  UA=#{req.header['user-agent']&.first}"
-  
-  # Extrair o ID do cliente dos parâmetros da consulta
+  # Extract client ID from query parameters
   query = req.query
   client_id = query['clientId'] || "anonymous-#{SecureRandom.uuid}"
-  timestamp = query['t'] || Time.now.to_i
   
-  # Anti-loop: verificar timestamps de reconexão muito frequentes (global)
-  # now = Time.now.to_i
-  # last_connection_time = $last_conn_m.synchronize { $last_conn[client_id] }
-  # if last_connection_time && (now - last_connection_time < 2)
-  #   puts "[SSE SERVER] Reconexão muito frequente detectada para #{client_id}, bloqueando brevemente..."
-  #   res.status = 429
-  #   res['Retry-After'] = '5'
-  #   res.body = "Too many reconnections, please wait a few seconds"
-  #   return
-  # end
-  # $last_conn_m.synchronize { $last_conn[client_id] = now }
+  puts "[SSE] New connection from client: #{client_id} (IP: #{req.peeraddr[3]})"
+
   
-  # Verificar se este cliente já tem uma conexão
-  if (old_queue = $sse_clients.delete(client_id))
-    puts "[SSE SERVER] Cliente duplicado: #{client_id} — descartando fila antiga"
+  # Remove any existing connection for this client
+  if $sse_clients.key?(client_id)
+    puts "[SSE] Removing previous connection for client: #{client_id}"
+    $sse_clients.delete(client_id)
   end
   
-  # Configurar headers para SSE com streaming chunked
+  # Set up SSE headers
+  res.status = 200
   res.chunked = true
   res['Content-Type'] = 'text/event-stream'
-  res['Cache-Control'] = 'no-cache, no-transform'
+  res['Cache-Control'] = 'no-cache, no-store'
   res['Connection'] = 'keep-alive'
-  # Este header é crucial para evitar que o browser reconecte automaticamente muito rápido
-  # A especificação SSE diz que browsers devem esperar pelo menos este tempo (em ms)
-  res['X-Accel-Buffering'] = 'no'  # Para Nginx não bufferizar a resposta
-  res['X-Pad'] = ''.ljust(2048, ' ')  # Preencher buffer inicial para browsers
-  # Adicionar headers Cross-Origin para evitar problemas com browsers
   res['Access-Control-Allow-Origin'] = '*'
-  res['Access-Control-Allow-Headers'] = 'Origin, X-Requested-With, Content-Type, Accept'
-
-  # Cria uma fila Queue para eventos SSE
+  res['X-Accel-Buffering'] = 'no'
+  
+  # Create a Queue for this client
   queue = Queue.new
-  # Adicionar metadados de timestamp para monitorar atividade
+  queue.instance_variable_set(:@client_id, client_id)
   queue.instance_variable_set(:@last_activity, Time.now)
   
-  # Primeiro adicionamos a diretiva retry para o EventSource
-  queue << "retry: 10000\n\n"
-  
-  # Create a minimal streaming object that implements what WEBrick needs
-  body = Object.new
-  
-  # Simple streaming enumerator
-  def body.each
-    puts "[SSE ENUM] started"
-
-    # send first bytes immediately
-    yield ": init\n\n"
-    puts "[SSE ENUM] -> 7B (init)"
-
-    # heartbeat every 15 s
-    loop do
-      sleep 15
-      yield ": heartbeat\n\n"
-      puts "[SSE ENUM] -> 12B (heartbeat)"
-    end
-  rescue IOError => e
-    puts "[SSE ENUM] closed: #{e.class} #{e.message}"
-  end
-  
-  # Minimal required methods for WEBrick
-  def body.to_s; ""; end
-  def body.bytesize; 0; end
-  def body.active?; true; end
-  def body.[](*);""; end
-  
-  # Assign the body to the response
-  res.body = body
-  
-  # Registrar este cliente pelo ID antes de enviar evento inicial
+  # Register client in global clients map
   $sse_clients[client_id] = queue
   
-  # envia o evento inicial com ID do cliente
-  queue << "data: {\"type\":\"connected\",\"clientId\":\"#{client_id}\",\"message\":\"SSE Connected\"}\n\n"
+  # Create a pipe for streaming
+  rd, wr = IO.pipe
   
-  puts "[SSE SERVER] Cliente conectado: #{client_id} (total: #{$sse_clients.size})"
+  # Send initial SSE directives immediately via the pipe
+  wr.write("retry: 10000\n\n")
+  wr.write("id: #{Time.now.to_i}\n")
+  wr.write("data: {\"type\":\"connected\",\"clientId\":\"#{client_id}\",\"message\":\"SSE Connected\"}\n\n")
+  wr.flush
   
-  # Adicionar callback para quando a conexão for fechada (este bloco será executado quando o cliente desconectar)
-  req.instance_variable_set(:@sse_client_id, client_id)
-  
-  # Thread para detectar desconexão por timeout
-  Thread.new do
+  # Start a thread to monitor the queue and write events to the pipe
+  thread = Thread.new do
     begin
-      # Esperar até que a conexão seja encerrada
-      # O WEBrick encerra a thread do handler quando a conexão é fechada
-      while body.active?
-        sleep 1
+      heartbeat_interval = 30 # increased to 30 seconds (still well within Chrome's timeout)
+      last_heartbeat = Time.now
+      
+      loop do
+        # Try to get an event from the queue (BLOCKING mode)
+        begin
+          # Use select with timeout to handle both queue events and heartbeats
+          # without spinning the CPU
+          if queue.empty?
+            # Check if we need to send a heartbeat
+            if Time.now - last_heartbeat >= heartbeat_interval
+              wr.write(": heartbeat\n\n")
+              wr.flush
+              last_heartbeat = Time.now
+              puts "[SSE] Sent heartbeat to client #{client_id}"
+            end
+            sleep 0.5 # Short sleep, then check again
+          else
+            # Queue has an event, get it and send it immediately
+            event = queue.pop # Blocking pop
+            wr.write(event.to_s)
+            wr.flush
+            puts "[SSE] Sent event to client #{client_id}: #{event.to_s.bytesize} bytes"
+          end
+        rescue IOError, Errno::EPIPE => e
+          # Connection closed by client
+          puts "[SSE] Connection closed by client #{client_id}: #{e.message}"
+          break
+        end
+        
+        # Break if the pipe is closed
+        break if wr.closed?
       end
     rescue => e
-      puts "[SSE SERVER] Erro ao monitorar conexão: #{e.message}"
+      puts "[SSE] Error in event thread for client #{client_id}: #{e.message}"
+      puts e.backtrace.join("\n")
     ensure
-      # Limpar quando a conexão for fechada
-      if $sse_clients.key?(client_id) && $sse_clients[client_id] == queue
-        $sse_clients.delete(client_id)
-        puts "[SSE SERVER] Cliente desconectado: #{client_id} (total restante: #{$sse_clients.size})"
-      end
+      # Clean up
+      wr.close unless wr.closed?
+      $sse_clients.delete(client_id)
+      puts "[SSE] Client disconnected: #{client_id} (remaining: #{$sse_clients.size})"
     end
   end
+  
+  # Ensure thread cleanup when request is done
+  req.instance_variable_set(:@sse_thread, thread)
+  req.instance_variable_set(:@sse_writer, wr)
+  
+  # Set the response body to the pipe reader
+  res.body = rd
+  
+  # Log connection
+  puts "[SSE] Client connected: #{client_id} (total: #{$sse_clients.size})"
 end
 
 # Translation endpoint using Ollama
@@ -186,13 +194,108 @@ server.mount_proc '/translate' do |req, res|
 
   translation = OllamaClient.translate(text, dir)
   res['Content-Type'] = 'application/json'
-  res.body = { translation: translation }.to_json
+  
+  if translation.start_with?('⚠️')
+    res.status = 503
+    res.body = { error: translation }.to_json
+  else
+    res.body = { translation: translation }.to_json
+  end
 end
 
 # Health check endpoint
 server.mount_proc '/healthz' do |_req, res|
   res['Content-Type'] = 'application/json'
   res.body = { status: 'ok', sse_clients: $sse_clients.size }.to_json
+end
+
+# Endpoint to fetch message history
+server.mount_proc '/history' do |req, res|
+  channel = req.query['channel']
+  limit = (req.query['limit'] || '50').to_i
+  limit = 50 if limit > 100 # Cap at 100 messages
+  
+  res['Content-Type'] = 'application/json'
+  
+  begin
+    if channel.nil? || channel.empty?
+      res.status = 400
+      res.body = { error: 'Channel parameter is required' }.to_json
+      return
+    end
+    
+    # Query message history from database
+    messages = Message.where(channel: channel)
+                     .order(Sequel.desc(:id))
+                     .limit(limit)
+                     .all
+    
+    # Transform messages to frontend payload format
+    frontend_messages = messages.map do |msg|
+      {
+        type: 'slack_message',
+        data: {
+          id: "#{msg.id}",
+          text: msg.text,
+          user: {
+            id: msg.user_id,
+            name: msg.real_name,
+            avatar: msg.avatar_url
+          },
+          channel: msg.channel,
+          timestamp: msg.timestamp,
+          reactions: []
+        }
+      }
+    end
+    
+    puts "[HISTORY] Returning #{messages.size} messages for channel #{channel}"
+    res.body = frontend_messages.to_json
+  rescue => e
+    puts "[HISTORY] Error fetching message history: #{e.message}"
+    res.status = 500
+    res.body = { error: "Server error fetching message history: #{e.message}" }.to_json
+  end
+end
+
+# Endpoint to fetch available Slack channels
+server.mount_proc '/channels' do |_req, res|
+  slack_token = ENV['SLACK_BOT_USER_OAUTH_TOKEN']
+  
+  # Debug log token (first few chars only)
+  token_preview = slack_token ? "#{slack_token[0..5]}..." : "nil"
+  puts "[SLACK API] Fetching channels with token: #{token_preview}"
+  
+  begin
+    puts "[SLACK API] Making request to conversations.list API..."
+    response = HTTP.auth("Bearer #{slack_token}")
+                  .get('https://slack.com/api/conversations.list', 
+                       params: { types: 'public_channel,private_channel' })
+    
+    puts "[SLACK API] Response status: #{response.status}"
+    data = JSON.parse(response.to_s)
+    
+    if data['ok']
+      channels = data['channels'].map do |channel|
+        { id: channel['id'], name: channel['name'] }
+      end
+      
+      puts "[SLACK API] Successfully fetched #{channels.length} channels"
+      res['Content-Type'] = 'application/json'
+      res.body = { channels: channels }.to_json
+    else
+      puts "[SLACK API] Error fetching channels: #{data['error']}"
+      res.status = 500
+      res['Content-Type'] = 'application/json'
+      res.body = { error: "Failed to fetch channels: #{data['error']}" }.to_json
+    end
+  rescue => e
+    puts "[SLACK API] Exception fetching channels: #{e.message}"
+    puts "[SLACK API] Backtrace: #{e.backtrace.join("\n")}"
+    res.status = 500
+    res['Content-Type'] = 'application/json'
+    res.body = { error: "Server error fetching channels: #{e.message}" }.to_json
+  end
 end
 
 # Send message to Slack endpoint
@@ -212,42 +315,56 @@ server.mount_proc '/send' do |req, res|
   res.body = { ok: data['ok'], error: data['error'] }.to_json
 end
 
-# Função para enviar eventos SSE aos clientes
+# Function to send SSE events to all connected clients
 def send_sse_event(data)
-  # Registrar clientes para remover em caso de erro
+  return if $sse_clients.empty?
+  
+  event_data = "id: #{Time.now.to_i}\ndata: #{data.to_json}\n\n"
   clients_to_remove = []
   
-  # Enviar para cada cliente usando sua queue
-  $sse_clients.each_pair do |client_id, queue|
+  $sse_clients.each do |client_id, queue|
     begin
-      # Atualizar timestamp de última atividade
+      # Update last activity timestamp
       queue.instance_variable_set(:@last_activity, Time.now)
       
-      # Enviar dados no formato SSE
-      queue << "data: #{data.to_json}\n\n"
-      puts "[SSE SERVER] Evento enviado para cliente: #{client_id}"
+      # Add event to client's queue
+      queue << event_data
+      puts "[SSE] Event queued for client #{client_id} (data type: #{data[:type]})"
     rescue => e
-      puts "[SSE SERVER] Erro ao enviar para cliente #{client_id}: #{e.message}"
+      puts "[SSE] Error sending to client #{client_id}: #{e.message}"
       clients_to_remove << client_id
     end
   end
   
-  # Remover clientes com erro
+  # Remove clients with errors
   clients_to_remove.each do |client_id|
     $sse_clients.delete(client_id)
-    puts "[SSE SERVER] Cliente removido: #{client_id} (total restante: #{$sse_clients.size})"
+    puts "[SSE] Client removed due to error: #{client_id} (remaining: #{$sse_clients.size})"
   end
   
-  # Log se nenhum cliente estiver disponível
-  if $sse_clients.empty?
-    puts "[SSE SERVER] Nenhum cliente SSE conectado para receber eventos"
-  end
+  # Log if no clients are available
+  puts "[SSE] Event sent to #{$sse_clients.size} clients" if $sse_clients.any?
 end
 
 # Iniciar o servidor WEBrick em uma thread separada
 server_thread = Thread.new do
   puts "[INIT] Servidor HTTP iniciado em http://localhost:#{port}"
   server.start
+end
+
+# Start event processing thread to handle Slack events
+event_processor_thread = Thread.new do
+  puts "[INIT] Iniciando thread de processamento de eventos"
+  loop do
+    begin
+      data = EVENT_QUEUE.pop
+      puts "[SLACK PROCESS] Processing event from queue"
+      handle_events_api(data)
+    rescue => e
+      puts "[SLACK PROCESS ERROR] Erro ao processar evento da fila: #{e.message}"
+      puts e.backtrace.join("\n")
+    end
+  end
 end
 
 # Trap de interrupção para encerrar o servidor corretamente
@@ -265,6 +382,14 @@ def attach_handlers(ws, token)
       puts "[SLACK PING] #{msg.data}"
       next
     end
+    
+    # === ultra-early ACK ========================================
+    if msg.data.to_s =~ /"envelope_id":"([^"]+)"/
+      eid = $1
+      ws.send({ envelope_id: eid }.to_json)
+      puts "[SLACK ACK] instant ACK for #{eid}"
+    end
+    # ===========================================================
 
     data = JSON.parse(msg.data.to_s) rescue nil
     unless data
@@ -272,17 +397,21 @@ def attach_handlers(ws, token)
       next
     end
 
-    # ACK se houver envelope_id
-    if (eid = data['envelope_id'])
-      ws.send({ envelope_id: eid }.to_json)
-    end
 
+    # Process events in a separate thread via queue
     case data['type']
     when 'disconnect'
       puts "[SLACK] Disconnect: #{data['reason']}"
       ws.close       # ‘close’ callback handles reconnection
     when 'events_api'
-      handle_events_api(data)   # factor existing big block into a helper
+      # Send to queue for async processing instead of processing immediately
+      puts "[SLACK QUEUE] Queuing event for async processing"
+      begin
+        EVENT_QUEUE << data
+      rescue ThreadError => e
+        # Should never happen with an unbounded queue, but log just in case
+        puts "[SLACK QUEUE] Push failed: #{e.message}"
+      end
     when 'hello'
       puts "[SLACK HELLO] Conexão estabelecida (app_id: #{data.dig('connection_info','app_id')})"
     end
@@ -324,34 +453,41 @@ def handle_events_api(data)
       if user_id && user_id.start_with?('U')
         profile = SlackUserService.fetch_user_profile(user_id)
         puts "[SLACK USER] Nome: #{profile['real_name']} | Avatar: #{profile['image_72']}"
-        event_payload = {
-          type:        data['type'],                   # tipo do evento
-          envelope_id: data['envelope_id'],            # ID do envelope
-          channel:     channel,
-          user_id:     user_id,
-          text:        text,
-          profile: {
-            real_name: profile['real_name'],
-            avatar:    profile['image_72']
+        
+        # Create message data in format expected by frontend
+        message_data = {
+          id: "#{ts}-#{user_id}",
+          text: text,
+          user: {
+            id: user_id,
+            name: profile['real_name'],
+            avatar: profile['image_72']
           },
-          timestamp:   Time.at(ts.to_f).strftime("%H:%M"),
-          reactions:   []
+          channel: channel,
+          timestamp: Time.at(ts.to_f).utc.iso8601,  # ISO-8601 for JS
+          reactions: []
+        }
+        
+        # Format payload in the structure expected by frontend
+        frontend_payload = {
+          type: 'slack_message',
+          data: message_data
         }
 
         # Salvar no DB e enviar SSE
         Message.create(
-          envelope_id: event_payload[:envelope_id],
-          channel:     event_payload[:channel],
-          user_id:     event_payload[:user_id],
-          text:        event_payload[:text],
-          real_name:   event_payload.dig(:profile, :real_name),
-          avatar_url:  event_payload.dig(:profile, :avatar),
-          timestamp:   event_payload[:timestamp]
+          envelope_id: data['envelope_id'],
+          channel:     channel,
+          user_id:     user_id,
+          text:        text,
+          real_name:   profile['real_name'],
+          avatar_url:  profile['image_72'],
+          timestamp:   Time.at(ts.to_f).utc.iso8601  # ISO-8601 for JS
         )
         puts "[DB] Mensagem salva no banco com ID ##{Message.last.id}"
-        puts "[SLACK PAYLOAD] " + JSON.pretty_generate(event_payload)
-        puts "[SSE TEST] Enviando evento: #{event_payload.to_json}"
-        send_sse_event(event_payload)
+        puts "[SLACK PAYLOAD] " + JSON.pretty_generate(frontend_payload)
+        puts "[SSE TEST] Enviando evento frontend: #{frontend_payload.to_json}"
+        send_sse_event(frontend_payload)
       end
     end
   end

@@ -33,6 +33,7 @@ document.addEventListener('DOMContentLoaded', () => {
   renderMessages();
   initEventListeners();
   initSSEConnection(); // Iniciar conexão SSE com o servidor
+  loadChannels(); // Carregar canais disponíveis do Slack e histórico de mensagens
   
   // Check for saved theme preference
   const savedTheme = localStorage.getItem('theme');
@@ -43,6 +44,125 @@ document.addEventListener('DOMContentLoaded', () => {
     darkThemeToggle.checked = true;
   }
 });
+
+// Function to load available Slack channels
+function loadChannels() {
+  fetch('/channels')
+    .then(response => {
+      if (!response.ok) {
+        throw new Error(`HTTP error ${response.status}`);
+      }
+      return response.json();
+    })
+    .then(data => {
+      if (data.channels && Array.isArray(data.channels)) {
+        // Get the channel select dropdown
+        const channelSelect = document.getElementById('channel-select');
+        
+        // Clear existing options except the default
+        while (channelSelect.options.length > 0) {
+          channelSelect.remove(0);
+        }
+        
+        // Add default option
+        const defaultOption = document.createElement('option');
+        defaultOption.value = '';
+        defaultOption.textContent = 'Selecione um canal...';
+        channelSelect.appendChild(defaultOption);
+        
+        // Sort channels alphabetically by name
+        data.channels.sort((a, b) => a.name.localeCompare(b.name));
+        
+        // Add each channel to the dropdown
+        data.channels.forEach(channel => {
+          const option = document.createElement('option');
+          option.value = channel.id;
+          option.textContent = `#${channel.name}`;
+          channelSelect.appendChild(option);
+        });
+        
+        // Check if there's a saved channel preference
+        const savedChannel = localStorage.getItem('selectedChannel');
+        if (savedChannel) {
+          channelSelect.value = savedChannel;
+          
+          // Load message history for the saved channel
+          loadMessageHistory(savedChannel);
+        }
+        
+        console.log(`[CHANNELS] Loaded ${data.channels.length} channels from Slack`);
+      } else {
+        console.error('[CHANNELS] Invalid response format:', data);
+      }
+    })
+    .catch(error => {
+      console.error('[CHANNELS] Error loading channels:', error);
+      showToast('Erro', 'Não foi possível carregar a lista de canais do Slack', true);
+    });
+}
+
+// Function to load message history for a channel
+function loadMessageHistory(channelId, limit = 50) {
+  if (!channelId) return;
+  
+  // Create a set to track processed message IDs
+  const processedMessages = new Set(messages.map(msg => msg.id));
+  
+  fetch(`/history?channel=${channelId}&limit=${limit}`)
+    .then(response => {
+      if (!response.ok) {
+        throw new Error(`HTTP error ${response.status}`);
+      }
+      return response.json();
+    })
+    .then(historyData => {
+      if (Array.isArray(historyData)) {
+        console.log(`[HISTORY] Received ${historyData.length} messages for channel ${channelId}`);
+        
+        // Process each message and add to messages array if not already present
+        const newMessages = [];
+        
+        historyData.forEach(item => {
+          if (item.type === 'slack_message' && item.data) {
+            const messageData = item.data;
+            
+            // Create standard message object
+            const historyMessage = {
+              id: messageData.id,
+              text: messageData.text || 'No text',
+              user: {
+                id: messageData.user?.id || 'unknown',
+                name: messageData.user?.name || 'Unknown User',
+                avatar: messageData.user?.avatar || (messageData.user?.name || 'UN').substring(0, 2).toUpperCase()
+              },
+              timestamp: messageData.timestamp,
+              isCurrentUser: false,
+              isNew: false
+            };
+            
+            // Only add if not already in the messages array
+            if (!processedMessages.has(historyMessage.id)) {
+              processedMessages.add(historyMessage.id);
+              newMessages.push(historyMessage);
+            }
+          }
+        });
+        
+        // Add to the beginning of messages array to show older messages first
+        if (newMessages.length > 0) {
+          messages = [...newMessages.reverse(), ...messages];
+          renderMessages();
+          console.log(`[HISTORY] Added ${newMessages.length} new messages to UI`);
+        }
+      } else {
+        console.error('[HISTORY] Invalid history data format:', historyData);
+      }
+    })
+    .catch(error => {
+      console.error('[HISTORY] Error loading message history:', error);
+      showToast('Erro', 'Não foi possível carregar o histórico de mensagens', true);
+    });
+}
 
 // Variáveis globais para gerenciar a conexão SSE
 let sseConnection = null;
@@ -108,6 +228,24 @@ let setupSSE = () => {
             // Process Slack messages
             if (data.type === 'slack_message' && data.data) {
               const messageData = data.data;
+              
+              // Improved deduplication: Allow same messageId if timestamp differs by at least 5 seconds
+              const dupe = messages.some(m => {
+                if (m.id === messageData.id) {
+                  // If we have timestamps, check time difference
+                  if (m.timestamp && messageData.timestamp) {
+                    const timeDiff = Math.abs(Date.parse(messageData.timestamp) - Date.parse(m.timestamp));
+                    return timeDiff < 5000; // Considered duplicate only if less than 5 seconds apart
+                  }
+                  return true; // No timestamps to compare, consider duplicate
+                }
+                return false; // Different ID, not a duplicate
+              });
+              
+              if (dupe) {
+                console.log(`[SSE CLIENT] Ignoring similar message with ID: ${messageData.id} (within 5s window)`);
+                return;
+              }
               
               // Create message object
               const newMessage = {
@@ -450,6 +588,21 @@ function initEventListeners() {
   // Highlight active channel when selected
   channelSelect.addEventListener('change', () => {
     highlightActiveChannel();
+    
+    // Save selected channel to localStorage
+    const selectedChannel = channelSelect.value;
+    if (selectedChannel) {
+      localStorage.setItem('selectedChannel', selectedChannel);
+      
+      // Clear existing messages when channel changes
+      messages = [];
+      renderMessages();
+      
+      // Load message history for the newly selected channel
+      loadMessageHistory(selectedChannel);
+    } else {
+      localStorage.removeItem('selectedChannel');
+    }
   });
   
   // Initialize channel highlight
@@ -480,7 +633,7 @@ function toggleTheme() {
 }
 
 // Helper function to fetch translation
-function fetchTranslation(text) {
+function fetchTranslation(text, retryCount = 0) {
   const direction = document.getElementById('pt-to-en').checked ? 'pt-to-en' : 'en-to-pt';
   
   return fetch('/translate', {
@@ -488,8 +641,24 @@ function fetchTranslation(text) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text, direction })
   })
-  .then(response => response.json())
-  .then(data => data.translation || `Translation preview: ${text}`);
+  .then(response => {
+    if (response.status === 503 && retryCount < 1) {
+      // Service unavailable - show toast and retry once
+      showToast('Erro', 'Serviço de tradução indisponível. Tentando novamente...', true);
+      
+      // Wait 2 seconds before retry
+      return new Promise(resolve => setTimeout(resolve, 2000))
+        .then(() => fetchTranslation(text, retryCount + 1));
+    }
+    
+    return response.json();
+  })
+  .then(data => {
+    if (data.error) {
+      throw new Error(data.error);
+    }
+    return data.translation || `Translation preview: ${text}`;
+  });
 }
 
 // Preview translation
@@ -503,7 +672,7 @@ function previewTranslation() {
   // Get the input text
   const text = messageInput.value.trim();
   
-  // Use the fetchTranslation helper
+  // Use the fetchTranslation helper with retry
   fetchTranslation(text)
     .then(translation => {
       // Display translation preview
@@ -516,14 +685,14 @@ function previewTranslation() {
     })
     .catch(error => {
       console.error('Error:', error);
-      showToast('Erro', 'Falha ao obter tradução', true);
+      showToast('Erro', 'Falha ao obter tradução. Serviço indisponível.', true);
       
       // Remove loading state on error
       translateButton.classList.remove('loading');
       translateButton.disabled = false;
       
       // Show fallback translation
-      previewText.textContent = `Tradução simulada para português: ${text}`;
+      previewText.textContent = `Tradução indisponível: ${text}`;
       translationPreview.classList.remove('hidden');
     });
 }
@@ -541,14 +710,33 @@ function sendMessage() {
   sendButton.classList.add('loading');
   sendButton.disabled = true;
   
-  // First get translation
+  // First get translation with retry capability
   fetch('/translate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text, direction })
   })
+  .then(response => {
+    if (response.status === 503) {
+      // Service unavailable - show toast and retry once
+      showToast('Erro', 'Serviço de tradução indisponível. Tentando novamente...', true);
+      
+      // Wait 2 seconds then retry once
+      return new Promise(resolve => setTimeout(resolve, 2000))
+        .then(() => fetch('/translate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, direction })
+        }));
+    }
+    return response;
+  })
   .then(response => response.json())
   .then(data => {
+    if (data.error) {
+      throw new Error(data.error);
+    }
+    
     const translation = data.translation;
     
     // Now send to Slack
@@ -721,6 +909,17 @@ function createMessageElement(message, showTranslated) {
 // Format time
 function formatTime(timestamp) {
   const date = new Date(timestamp);
+  
+  // Check if date is invalid (fix for "Invalid Date" issue)
+  if (isNaN(date.getTime())) {
+    // Fallback: if it's ISO-8601, extract time portion (11:16)
+    if (typeof timestamp === 'string' && timestamp.includes('T')) {
+      return timestamp.slice(11, 16);
+    }
+    // If it's already in HH:MM format, just return it
+    return timestamp;
+  }
+  
   const now = new Date();
   const diffMs = now - date;
   const diffMins = Math.round(diffMs / 60000);
