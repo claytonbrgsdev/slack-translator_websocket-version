@@ -141,6 +141,8 @@ server.mount_proc '/events' do |req, res|
   # Minimal required methods for WEBrick
   def body.to_s; ""; end
   def body.bytesize; 0; end
+  def body.active?; true; end
+  def body.[](*);""; end
   
   # Assign the body to the response
   res.body = body
