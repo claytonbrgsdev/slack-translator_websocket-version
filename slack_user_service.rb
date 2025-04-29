@@ -32,7 +32,7 @@ module SlackUserService
       # Sleep for a bit to avoid accidentally running twice
       sleep 300
     end
-  end
+  end.tap { |t| t.abort_on_exception = true; t.name = 'avatar-prune'; t.daemon = true }
   # Busca o perfil de um usuário do Slack pelo ID
   # @param user_id [String] ID do usuário no Slack
   # @return [Hash, nil] Objeto de perfil do usuário ou nil em caso de erro
@@ -55,8 +55,9 @@ module SlackUserService
     
     # Step 2: Try the persistent DB cache
     begin
-      db_profile = UserProfile.get_profile(user_id)
-      if db_profile
+      if profile_data = UserProfile.get_profile(user_id)
+        # Memoize the JSON parse result
+        db_profile = profile_data
         # Refresh in-memory cache as well (thread-safe with LRU eviction)
         @mem_mutex.synchronize do
           # LRU eviction - remove oldest entry if cache is full
