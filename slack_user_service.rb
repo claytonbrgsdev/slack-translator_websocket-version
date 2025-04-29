@@ -1,26 +1,82 @@
 require 'http'
 require 'json'
+require_relative 'models/user_profile'
 
 # Serviço para buscar informações de perfil de usuários do Slack
 module SlackUserService
-  # Cache de perfis para reduzir chamadas de API
+  # In-memory cache for current session (backed by persistent DB cache)
   @user_profiles = {}
   @profile_timestamps = {}
+  @mem_mutex = Mutex.new  # For thread-safe access to in-memory cache
+  MAX_MEM_CACHE = 1000    # Prevent unbounded growth in long-lived processes
+  
+  # Schedule daily cache pruning
+  @prune_thread = Thread.new do
+    loop do
+      # Sleep until 3 AM
+      now = Time.now
+      target_hour = 3 # 3 AM
+      seconds_until_3am = ((24 - now.hour + target_hour) % 24) * 3600 - now.min * 60 - now.sec
+      
+      puts "[PROFILE CACHE] Next pruning scheduled in #{(seconds_until_3am/3600.0).round(1)} hours"
+      sleep seconds_until_3am
+      
+      # Prune old profiles
+      begin
+        count = UserProfile.prune_old_profiles
+        puts "[PROFILE CACHE] Daily pruning complete: removed #{count} old profiles"
+      rescue => e
+        puts "[PROFILE CACHE] Error during pruning: #{e.message}"
+      end
+      
+      # Sleep for a bit to avoid accidentally running twice
+      sleep 300
+    end
+  end
   # Busca o perfil de um usuário do Slack pelo ID
   # @param user_id [String] ID do usuário no Slack
   # @return [Hash, nil] Objeto de perfil do usuário ou nil em caso de erro
   def self.fetch_user_profile(user_id)
-    # Check if profile is in cache and not expired (24 hours cache)
-    if @user_profiles[user_id] && @profile_timestamps[user_id]
-      cache_age = Time.now - @profile_timestamps[user_id]
-      if cache_age < 86400 # 24 hours in seconds
-        puts "[SLACK USER] Using cached profile for: #{user_id} (cache age: #{(cache_age/3600).round(1)}h)"
-        return @user_profiles[user_id]
-      else
-        puts "[SLACK USER] Cache expired for: #{user_id} (#{(cache_age/3600).round(1)}h old)"
+    # Step 1: Check the in-memory cache first (fastest) - with thread safety
+    profile = nil
+    @mem_mutex.synchronize do
+      if @user_profiles[user_id] && @profile_timestamps[user_id]
+        cache_age = Time.now - @profile_timestamps[user_id]
+        if cache_age < 86400 # 24 hours in seconds
+          puts "[SLACK USER] Using in-memory cache for: #{user_id} (age: #{(cache_age/3600).round(1)}h)"
+          profile = @user_profiles[user_id]
+        else
+          puts "[SLACK USER] In-memory cache expired for: #{user_id} (#{(cache_age/3600).round(1)}h old)"
+        end
       end
     end
     
+    return profile if profile # Return the profile if found in memory cache
+    
+    # Step 2: Try the persistent DB cache
+    begin
+      db_profile = UserProfile.get_profile(user_id)
+      if db_profile
+        # Refresh in-memory cache as well (thread-safe with LRU eviction)
+        @mem_mutex.synchronize do
+          # LRU eviction - remove oldest entry if cache is full
+          if @user_profiles.size >= MAX_MEM_CACHE
+            oldest_key = @profile_timestamps.min_by { |_, timestamp| timestamp }[0]
+            @user_profiles.delete(oldest_key)
+            @profile_timestamps.delete(oldest_key)
+            puts "[PROFILE CACHE] LRU eviction: removed oldest user #{oldest_key} from memory cache"
+          end
+          
+          @user_profiles[user_id] = db_profile
+          @profile_timestamps[user_id] = Time.now
+        end
+        return db_profile
+      end
+    rescue => e
+      puts "[SLACK USER] DB cache error: #{e.message}"
+    end
+    
+    # Step 3: Fall back to Slack API
     puts "[SLACK USER] Buscando perfil para usuário: #{user_id}"
     
     begin
@@ -43,9 +99,28 @@ module SlackUserService
         puts "[SLACK USER] Perfil encontrado: #{user_profile['real_name']} (#{user_profile['display_name']})"
         puts "[SLACK USER] Avatar URL: #{user_profile['image_72']}"
         
-        # Cache the profile before returning it
-        @user_profiles[user_id] = user_profile
-        @profile_timestamps[user_id] = Time.now
+        # Update both in-memory and persistent cache
+        @mem_mutex.synchronize do
+          # LRU eviction - remove oldest entry if cache is full
+          if @user_profiles.size >= MAX_MEM_CACHE
+            oldest_key = @profile_timestamps.min_by { |_, timestamp| timestamp }[0]
+            @user_profiles.delete(oldest_key)
+            @profile_timestamps.delete(oldest_key)
+            puts "[PROFILE CACHE] LRU eviction: removed oldest user #{oldest_key} from memory cache"
+          end
+          
+          @user_profiles[user_id] = user_profile
+          @profile_timestamps[user_id] = Time.now
+        end
+        
+        # Save to persistent DB cache (non-blocking)
+        Thread.new do
+          begin
+            UserProfile.save_profile(user_id, user_profile)
+          rescue => e
+            puts "[SLACK USER] Error saving profile to DB: #{e.message}"
+          end
+        end
         
         # Retornar o perfil completo do usuário
         return user_profile

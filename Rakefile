@@ -4,6 +4,7 @@ require 'socket'
 require 'timeout'
 require 'open3'
 require 'uri'
+require_relative 'models/user_profile'
 
 namespace :sse do
   desc "Run smoke test to verify SSE endpoint is working"
@@ -108,6 +109,27 @@ namespace :sse do
       Process.wait(pid) rescue nil
       File.unlink("test_server.log") rescue nil
     end
+  end
+end
+
+namespace :cache do
+  desc "Prune old user profiles from the cache (older than 7 days)"
+  task :prune do
+    puts "Pruning old user profiles..."
+    count = UserProfile.prune_old_profiles
+    puts "Removed #{count} old profile(s) from cache"
+  end
+  
+  desc "List all cached user profiles"
+  task :list do
+    puts "Listing all cached user profiles:"
+    count = 0
+    UserProfile.all.each do |profile|
+      age_hours = ((Time.now - profile.fetched_at) / 3600).round(1)
+      puts "  User ID: #{profile.user_id}, fetched #{age_hours}h ago"
+      count += 1
+    end
+    puts "Total: #{count} profile(s) in cache"
   end
 end
 
