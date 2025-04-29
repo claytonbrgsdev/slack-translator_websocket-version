@@ -97,7 +97,17 @@ function loadChannels() {
     })
     .catch(error => {
       console.error('[CHANNELS] Error loading channels:', error);
-      showToast('Erro', 'Não foi possível carregar a lista de canais do Slack', true);
+      
+      if (error.message.includes('403') || error.message.includes('missing_scope')) {
+        showToast(
+          'Permissão faltando',
+          'O bot precisa dos escopos "channels:read" (públicos) e "groups:read" (privados). ' +
+          'Reinstale o app no Slack e copie o novo token.',
+          true
+        );
+      } else {
+        showToast('Erro', 'Não foi possível carregar a lista de canais do Slack', true);
+      }
     });
 }
 

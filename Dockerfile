@@ -22,4 +22,4 @@ COPY . .
 RUN mkdir -p /app/db/migrations
 
 EXPOSE 4567
-CMD ["ruby", "server.rb"]
+CMD sequel -m db/migrations sqlite://db/messages.sqlite3 && ruby server.rb

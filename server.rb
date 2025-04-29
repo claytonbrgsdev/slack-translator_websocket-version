@@ -41,8 +41,10 @@ $sse_monitor_thread = Thread.new do
       
       # Remover clientes inativos
       inactive_clients.each do |client_id|
-        $sse_clients.delete(client_id)
-        puts "[SSE MONITOR] Cliente removido: #{client_id} (total: #{$sse_clients.size})"
+        if (info = $sse_clients.delete(client_id))
+          info[:thread]&.kill
+          puts "[SSE MONITOR] Cliente removido: #{client_id} (total: #{$sse_clients.size})"
+        end
       end
     rescue => e
       puts "[SSE MONITOR] Erro ao monitorar clientes: #{e.message}"
@@ -54,9 +56,6 @@ end
 $ws_mutex = Mutex.new
 $slack_ws = nil
 $backoff = 1
-
-# Variáveis globais para SSE
-$sse_clients = {}
 
 # Verify Ollama is running before proceeding
 begin
@@ -116,8 +115,8 @@ server.mount_proc '/events' do |req, res|
   queue.instance_variable_set(:@client_id, client_id)
   queue.instance_variable_set(:@last_activity, Time.now)
   
-  # Register client in global clients map
-  $sse_clients[client_id] = queue
+  # Register client in global clients map with both queue and thread reference
+  $sse_clients[client_id] = { queue: queue, thread: nil }
   
   # Create a pipe for streaming
   rd, wr = IO.pipe
@@ -129,7 +128,7 @@ server.mount_proc '/events' do |req, res|
   wr.flush
   
   # Start a thread to monitor the queue and write events to the pipe
-  thread = Thread.new do
+  writer = Thread.new do
     begin
       heartbeat_interval = 30 # increased to 30 seconds (still well within Chrome's timeout)
       last_heartbeat = Time.now
@@ -175,8 +174,11 @@ server.mount_proc '/events' do |req, res|
     end
   end
   
+  # Store thread reference in client structure
+  $sse_clients[client_id][:thread] = writer
+  
   # Ensure thread cleanup when request is done
-  req.instance_variable_set(:@sse_thread, thread)
+  req.instance_variable_set(:@sse_thread, writer)
   req.instance_variable_set(:@sse_writer, wr)
   
   # Set the response body to the pipe reader
@@ -284,6 +286,15 @@ server.mount_proc '/channels' do |_req, res|
       res['Content-Type'] = 'application/json'
       res.body = { channels: channels }.to_json
     else
+      if data['error'] == 'missing_scope'
+        needed = data['needed'] || 'unknown'
+        provided = data['provided'] || 'none'
+        puts "[SLACK API] Missing scope → needed: #{needed} | provided: #{provided}"
+        res.status = 403
+        res.body   = { error: 'missing_scope', needed: needed, provided: provided }.to_json
+        next
+      end
+      
       puts "[SLACK API] Error fetching channels: #{data['error']}"
       res.status = 500
       res['Content-Type'] = 'application/json'
@@ -322,13 +333,13 @@ def send_sse_event(data)
   event_data = "id: #{Time.now.to_i}\ndata: #{data.to_json}\n\n"
   clients_to_remove = []
   
-  $sse_clients.each do |client_id, queue|
+  $sse_clients.each do |client_id, client_info|
     begin
       # Update last activity timestamp
-      queue.instance_variable_set(:@last_activity, Time.now)
+      client_info[:queue].instance_variable_set(:@last_activity, Time.now)
       
       # Add event to client's queue
-      queue << event_data
+      client_info[:queue] << event_data
       puts "[SSE] Event queued for client #{client_id} (data type: #{data[:type]})"
     rescue => e
       puts "[SSE] Error sending to client #{client_id}: #{e.message}"
@@ -338,7 +349,9 @@ def send_sse_event(data)
   
   # Remove clients with errors
   clients_to_remove.each do |client_id|
-    $sse_clients.delete(client_id)
+    if (info = $sse_clients.delete(client_id))
+      info[:thread]&.kill
+    end
     puts "[SSE] Client removed due to error: #{client_id} (remaining: #{$sse_clients.size})"
   end
   
@@ -368,7 +381,11 @@ event_processor_thread = Thread.new do
 end
 
 # Trap de interrupção para encerrar o servidor corretamente
-trap('INT') { server.shutdown }
+trap('INT') do
+  puts "[SHUTDOWN] Closing Slack socket"
+  $slack_ws&.close
+  server.shutdown
+end
 
 def attach_handlers(ws, token)
   ws.on :open do
@@ -401,8 +418,11 @@ def attach_handlers(ws, token)
     # Process events in a separate thread via queue
     case data['type']
     when 'disconnect'
-      puts "[SLACK] Disconnect: #{data['reason']}"
-      ws.close       # ‘close’ callback handles reconnection
+      reason = data.dig('reason') || 'unknown'
+      retry_after = data.dig('retry', 'retry_after') || 5
+      puts "[SLACK] Disconnect: #{reason} – retry in #{retry_after}s"
+      ws.close
+      sleep retry_after
     when 'events_api'
       # Send to queue for async processing instead of processing immediately
       puts "[SLACK QUEUE] Queuing event for async processing"
@@ -424,12 +444,13 @@ def attach_handlers(ws, token)
   end
 
   ws.on :close do |e|
-    puts "[SLACK CLOSE] WebSocket fechado: #{e}"
+    puts "[SLACK CLOSE] #{e}"
     $slack_ws = nil
-    # Exponential back-off reconnection
+
+    # Slack may still be cleaning up the previous socket – wait longer
     sleep $backoff
-    $backoff = [$backoff * 2, 30].min
-    puts "[SLACK] Reconnecting (back-off #{$backoff}s)…"
+    $backoff = [$backoff * 2, 30].min   # back-off up to 30 s
+    puts "[SLACK] Reconnecting in #{$backoff}s…"
     start_socket(token)
   end
 end
@@ -496,6 +517,7 @@ end
 def start_socket(token)
   $ws_mutex.synchronize do
     return if $slack_ws && !$slack_ws.closed?
+    $slack_ws&.close # <-- force-close stale socket
     url = open_socket_url(token)
     $slack_ws = WebSocket::Client::Simple.connect(url)
     attach_handlers($slack_ws, token)

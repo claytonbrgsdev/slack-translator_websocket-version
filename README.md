@@ -25,11 +25,12 @@ Real-time Slack message translator with WebSocket integration for Slack's Socket
 1. Create a Slack App at https://api.slack.com/apps
 2. Enable Socket Mode
 3. Add the following Bot Token Scopes:
-   - `channels:history`
-   - `channels:read`
+   - `channels:history`    (public messages)
+   - `groups:history`     (private channels)
+   - `channels:read`      (channel list for /channels)
    - `chat:write`
    - `users:read`
-4. Create an App-Level Token with `connections:write` scope
+4. Create an App-Level Token with `connections:write` scope (Socket Mode)
 5. Install the app to your workspace
 6. Copy your tokens to the `.env` file
 
