@@ -72,6 +72,7 @@ $last_conn = {}
 $last_conn_m = Mutex.new
 server.mount_proc '/events' do |req, res|
   puts "[SSE SERVER] >>> /events called  (raw query=#{req.query_string})"
+  puts "[SSE DEBUG] /events hit — IP=#{req.peeraddr[3]}  UA=#{req.header['user-agent']&.first}"
   
   # Extrair o ID do cliente dos parâmetros da consulta
   query = req.query
@@ -79,16 +80,16 @@ server.mount_proc '/events' do |req, res|
   timestamp = query['t'] || Time.now.to_i
   
   # Anti-loop: verificar timestamps de reconexão muito frequentes (global)
-  now = Time.now.to_i
-  last_connection_time = $last_conn_m.synchronize { $last_conn[client_id] }
-  if last_connection_time && (now - last_connection_time < 2)
-    puts "[SSE SERVER] Reconexão muito frequente detectada para #{client_id}, bloqueando brevemente..."
-    res.status = 429
-    res['Retry-After'] = '5'
-    res.body = "Too many reconnections, please wait a few seconds"
-    return
-  end
-  $last_conn_m.synchronize { $last_conn[client_id] = now }
+  # now = Time.now.to_i
+  # last_connection_time = $last_conn_m.synchronize { $last_conn[client_id] }
+  # if last_connection_time && (now - last_connection_time < 2)
+  #   puts "[SSE SERVER] Reconexão muito frequente detectada para #{client_id}, bloqueando brevemente..."
+  #   res.status = 429
+  #   res['Retry-After'] = '5'
+  #   res.body = "Too many reconnections, please wait a few seconds"
+  #   return
+  # end
+  # $last_conn_m.synchronize { $last_conn[client_id] = now }
   
   # Verificar se este cliente já tem uma conexão
   if (old_queue = $sse_clients.delete(client_id))
