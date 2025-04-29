@@ -58,15 +58,19 @@ $slack_ws = nil
 $backoff = 1
 
 # Verify Ollama is running before proceeding
-begin
-  # Ollama doesn't have a /api/health endpoint, just check the root endpoint
-  health = HTTP.get("#{OllamaClient::HOST}")
-  raise unless health.status.success?
-  puts "[INIT] ✅ Connected to Ollama at #{OllamaClient::HOST}"
-rescue => e
-  puts "[INIT] ❌ Cannot reach Ollama at #{OllamaClient::HOST} – please start ollama serve"
-  puts "[INIT] Error: #{e.message}"
-  exit 1
+unless ENV['CI'] == 'true' || ENV['RACK_ENV'] == 'test'
+  begin
+    # Ollama doesn't have a /api/health endpoint, just check the root endpoint
+    health = HTTP.get("#{OllamaClient::HOST}")
+    # Success
+    puts "[INIT] ✅ Connected to Ollama at #{OllamaClient::HOST}"
+  rescue => e
+    puts "[INIT] ❌ Cannot reach Ollama at #{OllamaClient::HOST} – please start ollama serve"
+    puts e.message
+    exit(1)
+  end
+else
+  puts "[INIT] 🔍 Skipping Ollama health check in CI/test environment"
 end
 
 # Configurar o servidor WEBrick

@@ -1,5 +1,7 @@
 # Slack Translator (WebSocket Version)
 
+![CI](https://github.com/claytonbrgsdev/slack-translator_websocket-version/actions/workflows/ci.yml/badge.svg)
+
 Real-time Slack message translator with WebSocket integration for Slack's Socket Mode API and Server-Sent Events (SSE) for frontend communication.
 
 ## Features
