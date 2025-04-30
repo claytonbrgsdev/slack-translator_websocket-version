@@ -311,19 +311,49 @@ end
 
 # Send message to Slack endpoint
 server.mount_proc '/send' do |req, res|
-  payload = JSON.parse(req.body) rescue {}
-  channel = payload['channel']
-  text    = payload['text']
-
-  slack_token = ENV['SLACK_BOT_USER_OAUTH_TOKEN']
-  resp = HTTP.headers(
-           'Authorization' => "Bearer #{slack_token}",
-           'Content-Type'  => 'application/json'
-         ).post('https://slack.com/api/chat.postMessage',
-                json: { channel: channel, text: text })
-  data = JSON.parse(resp.to_s)
-  res['Content-Type'] = 'application/json'
-  res.body = { ok: data['ok'], error: data['error'] }.to_json
+  begin
+    payload = JSON.parse(req.body) rescue {}
+    channel = payload['channel']
+    text    = payload['text']
+    
+    # Log the full payload before sending
+    puts "➡️ Sending payload to Slack: #{payload.to_json}"
+    
+    slack_token = ENV['SLACK_BOT_USER_OAUTH_TOKEN']
+    
+    begin
+      resp = HTTP.headers(
+              'Authorization' => "Bearer #{slack_token}",
+              'Content-Type'  => 'application/json'
+            ).post('https://slack.com/api/chat.postMessage',
+                  json: { channel: channel, text: text })
+      
+      # Log the response status and body
+      data = JSON.parse(resp.to_s)
+      puts "⬅️ Slack responded: status=#{resp.status}, body=#{resp.body}"
+      
+      # Log any error from Slack
+      if data['ok'] == false
+        puts "❌ Slack error: #{data['error']}"
+      end
+      
+      res['Content-Type'] = 'application/json'
+      res.body = { ok: data['ok'], error: data['error'] }.to_json
+    rescue => e
+      # Catch and log any network or timeout errors
+      puts "❌ Exception sending to Slack: #{e.class}: #{e.message}"
+      puts e.backtrace.join("\n")
+      
+      res['Content-Type'] = 'application/json'
+      res.body = { ok: false, error: e.message }.to_json
+    end
+  rescue => e
+    puts "❌ Unexpected error in /send endpoint: #{e.class}: #{e.message}"
+    puts e.backtrace.join("\n")
+    
+    res['Content-Type'] = 'application/json'
+    res.body = { ok: false, error: "Server error: #{e.message}" }.to_json
+  end
 end
 
 # Function to send SSE events to all connected clients
@@ -375,70 +405,55 @@ event_processor_thread = Thread.new do
   end
 end
 
-# ── STARTUP ──
-
-# Trap de interrupção para encerrar o servidor corretamente (register before starting any threads)
-trap('INT') do
-  puts "[SHUTDOWN] Closing Slack socket"
-  $slack_ws&.close if $slack_ws
-  server.shutdown if server && server.status == :Running
-  exit 0
-end
-
-# Special handling for smoke tests in CI
-if ENV['CI'] == 'true'
-  puts "[CI] Running in CI environment - enabling smoke test mode"
-  
-  # In CI, start health check endpoints but don't block on server_thread.join
-  Thread.new do
-    puts "[INIT] Servidor HTTP iniciado em http://localhost:#{port}"
+# Helper method definitions
+def start_socket(token)
+  $ws_mutex.synchronize do
+    # Don't try to reconnect if we already have an active connection
+    return if $slack_ws && !$slack_ws.closed?
+    
+    # Force close any stale socket
+    if $slack_ws
+      begin
+        $slack_ws.close
+        puts "[SLACK] Closed stale socket connection"
+      rescue => e
+        puts "[SLACK] Error closing stale socket: #{e.message}"
+      end
+    end
+    
+    # Always get a fresh URL for each connection attempt
     begin
-      server.start
+      url = open_socket_url(token)
+      puts "[SLACK] Got fresh connection URL"
+      
+      # Connect with the new URL
+      $slack_ws = WebSocket::Client::Simple.connect(url)
+      puts "[SLACK] Created new WebSocket connection"
+      
+      # Attach handlers to the new connection
+      attach_handlers($slack_ws, token)
+      
+      # We don't reset backoff here - we do it in the :open handler
+      # to ensure it only happens on successful connection
     rescue => e
-      puts "[ERROR] Server error in CI mode: #{e.message}"
+      puts "[SLACK] Connection error: #{e.message}"
+      # Schedule another reconnection attempt after backoff
+      Thread.new do
+        sleep $backoff
+        # Increase backoff with jitter, capped at 30s
+        jitter_factor = 1.0 + rand(-0.2..0.2)
+        $backoff = [($backoff * 2 * jitter_factor).round(1), 30].min
+        puts "[SLACK] Retrying connection in #{$backoff}s..."
+        start_socket(token)
+      end
     end
   end
-  
-  # In CI, don't attempt to start Slack WebSocket
-  puts "[SLACK] Skip WebSocket in CI environment"
-  
-  # Allow the server to start
-  sleep 2
-  puts "[CI] Server ready for smoke tests"
-  
-  # Keep alive only in normal run mode (not in CI)
-  unless ENV['SMOKE_TEST'] == 'true'
-    # Keep CI process alive but let smoke tests control the lifecycle
-    sleep 30 
-  end
-else
-  # Normal (non-CI) startup mode
-  # 1) Launch WEBrick in the background
-  server_thread = Thread.new do
-    puts "[INIT] Servidor HTTP iniciado em http://localhost:#{port}"
-    server.start
-  end
-
-  # 2) Conditionally start Slack Socket Mode (only if token is set)
-  if ENV['SLACK_APP_LEVEL_TOKEN']
-    slack_token = ENV.fetch('SLACK_APP_LEVEL_TOKEN')
-    puts "[SLACK] Initializing Slack WebSocket…"
-    start_socket(slack_token)
-  else
-    puts "[SLACK] No SLACK_APP_LEVEL_TOKEN provided, skipping Socket Mode startup."
-  end
-  
-  # Wait for server to be ready
-  sleep 0.5
-  puts "[INIT] Server ready for connections"
-  
-  # 3) Wait for WEBrick to finish (this keeps the process alive)
-  server_thread.join
 end
 
 def attach_handlers(ws, token)
   ws.on :open do
     puts "[SLACK] WebSocket conectado com sucesso"
+    puts "[SLACK OPEN] URL=#{ws.url}  Token=#{token[0..5]}…"
     $backoff = 1                 # reset back-off timer
   end
 
@@ -462,18 +477,30 @@ def attach_handlers(ws, token)
             ws.send(ping_payload)
             puts "[SLACK PING] Sent ping at #{Time.now}"
             last_activity = Time.now
+          rescue OpenSSL::SSL::SSLError => e
+            puts "[SLACK PING ERROR] SSL error sending ping: #{e.message}"
+            puts e.backtrace.join("\n")
+            # Reset last_activity to ensure next ping is scheduled correctly
+            last_activity = Time.now
           rescue => e
-            puts "[SLACK PING] Error sending ping: #{e.message}"
+            puts "[SLACK PING ERROR] Unexpected error: #{e.class}: #{e.message}"
+            puts e.backtrace.join("\n")
+            # Reset last_activity to ensure next ping is scheduled correctly
+            last_activity = Time.now
           end
         end
       end
     rescue => e
       puts "[SLACK PING] Ping timer error: #{e.message}"
+      puts e.backtrace.join("\n")
     end
   end
   ping_timer.abort_on_exception = true
   
   ws.on :message do |msg|
+    # Log raw WebSocket events to see exactly what Slack is sending
+    puts "[SLACK RAW] #{msg.data.to_s[0..500]}"
+    
     # Reset activity timer on any incoming message
     last_activity = Time.now
     
@@ -532,7 +559,11 @@ def attach_handlers(ws, token)
   end
 
   ws.on :close do |e|
-    puts "[SLACK CLOSE] Code: #{e.code.inspect}, Reason: #{e.reason.inspect}"
+    if e.nil?
+      puts "[SLACK CLOSE] Conexão fechada (sem detalhes disponíveis)"
+    else
+      puts "[SLACK CLOSE] Code: #{e.code.inspect}, Reason: #{e.reason.inspect}"
+    end
     puts "[SLACK RECONNECT] scheduling reconnect in #{$backoff}s"
     $slack_ws = nil
 
@@ -549,7 +580,6 @@ def attach_handlers(ws, token)
 end
 
 # Helper for events_api processing extracted from inline handler
-
 def handle_events_api(data)
   payload = data['payload']
   puts "[SLACK DEBUG] Payload events_api: #{payload.keys.join(', ')}" if payload
@@ -607,46 +637,82 @@ def handle_events_api(data)
   end
 end
 
-def start_socket(token)
-  $ws_mutex.synchronize do
-    # Don't try to reconnect if we already have an active connection
-    return if $slack_ws && !$slack_ws.closed?
-    
-    # Force close any stale socket
-    if $slack_ws
-      begin
-        $slack_ws.close
-        puts "[SLACK] Closed stale socket connection"
-      rescue => e
-        puts "[SLACK] Error closing stale socket: #{e.message}"
-      end
-    end
-    
-    # Always get a fresh URL for each connection attempt
+# ── STARTUP ──
+
+# Trap de interrupção para encerrar o servidor corretamente (register before starting any threads)
+trap('INT') do
+  puts "[SHUTDOWN] Closing Slack socket"
+  $slack_ws&.close if $slack_ws
+  server.shutdown if server && server.status == :Running
+  exit 0
+end
+
+# Special handling for smoke tests in CI
+if ENV['CI'] == 'true'
+  puts "[CI] Running in CI environment - enabling smoke test mode"
+  
+  # In CI, start health check endpoints but don't block on server_thread.join
+  Thread.new do
+    puts "[INIT] Servidor HTTP iniciado em http://localhost:#{port}"
     begin
-      url = open_socket_url(token)
-      puts "[SLACK] Got fresh connection URL"
-      
-      # Connect with the new URL
-      $slack_ws = WebSocket::Client::Simple.connect(url)
-      puts "[SLACK] Created new WebSocket connection"
-      
-      # Attach handlers to the new connection
-      attach_handlers($slack_ws, token)
-      
-      # We don't reset backoff here - we do it in the :open handler
-      # to ensure it only happens on successful connection
+      server.start
     rescue => e
-      puts "[SLACK] Connection error: #{e.message}"
-      # Schedule another reconnection attempt after backoff
-      Thread.new do
-        sleep $backoff
-        # Increase backoff with jitter, capped at 30s
-        jitter_factor = 1.0 + rand(-0.2..0.2)
-        $backoff = [($backoff * 2 * jitter_factor).round(1), 30].min
-        puts "[SLACK] Retrying connection in #{$backoff}s..."
-        start_socket(token)
-      end
+      puts "[ERROR] Server error in CI mode: #{e.message}"
     end
   end
+  
+  # In CI, don't attempt to start Slack WebSocket
+  puts "[SLACK] Skip WebSocket in CI environment"
+  
+  # Allow the server to start
+  sleep 2
+  puts "[CI] Server ready for smoke tests"
+  
+  # Keep alive only in normal run mode (not in CI)
+  unless ENV['SMOKE_TEST'] == 'true'
+    # Keep CI process alive but let smoke tests control the lifecycle
+    sleep 30 
+  end
+else
+  # Normal (non-CI) startup mode
+  # 1) Launch WEBrick in the background
+  server_thread = Thread.new do
+    puts "[INIT] Servidor HTTP iniciado em http://localhost:#{port}"
+    server.start
+  end
+
+  # 2) Conditionally start Slack Socket Mode (only if token is set)
+  if ENV['SLACK_APP_LEVEL_TOKEN']
+    slack_token = ENV.fetch('SLACK_APP_LEVEL_TOKEN')
+    puts "[SLACK] Initializing Slack WebSocket…"
+    start_socket(slack_token)
+    
+    # Start watchdog thread to monitor Slack connection activity
+    unless defined? WATCHDOG_THREAD
+      WATCHDOG_THREAD = Thread.new do
+        loop do
+          sleep 10
+          if Time.now - $last_slack_message_at > 30
+            puts "[WATCHDOG] Sem eventos do Slack por >30s, forçando reconnect"
+            $slack_ws&.close
+            start_socket(slack_token)
+            $last_slack_message_at = Time.now
+          end
+        end
+      end
+      WATCHDOG_THREAD.abort_on_exception = true
+      puts "[WATCHDOG] Thread de monitoramento iniciada"
+    end
+  else
+    puts "[SLACK] No SLACK_APP_LEVEL_TOKEN provided, skipping Socket Mode startup."
+  end
+  
+  # Wait for server to be ready
+  sleep 0.5
+  puts "[INIT] Server ready for connections"
+  
+  # 3) Wait for WEBrick to finish (this keeps the process alive)
+  server_thread.join
 end
+
+

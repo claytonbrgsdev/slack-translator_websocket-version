@@ -109,6 +109,7 @@ The application will be available at http://localhost:4567
   - WEBrick server for static content and endpoints
   - SSE for real-time frontend communication
   - Message persistence via Sequel ORM
+  - Automatic reconnection for Slack WebSocket with exponential backoff
 
 - **Frontend (JavaScript):**
   - EventSource for SSE connection

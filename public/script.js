@@ -758,6 +758,9 @@ function sendMessage() {
   })
   .then(response => response.json())
   .then(data => {
+    // Log the raw JSON response from the server
+    console.log('[SLACK RESPONSE]', data);
+    
     if (data.ok) {
       // Add to local messages
       const newMessage = {
