@@ -64,9 +64,9 @@ begin
   raise unless health.status.success?
   puts "[INIT] ✅ Connected to Ollama at #{OllamaClient::HOST}"
 rescue => e
-  puts "[INIT] ❌ Cannot reach Ollama at #{OllamaClient::HOST} – please start ollama serve"
+  puts "[INIT] ⚠️ Cannot reach Ollama at #{OllamaClient::HOST} – proceeding without health-check"
   puts "[INIT] Error: #{e.message}"
-  exit 1
+  # Note: Not exiting, server will continue startup.
 end
 
 # Configurar o servidor WEBrick
@@ -359,11 +359,6 @@ def send_sse_event(data)
   puts "[SSE] Event sent to #{$sse_clients.size} clients" if $sse_clients.any?
 end
 
-# Iniciar o servidor WEBrick em uma thread separada
-server_thread = Thread.new do
-  puts "[INIT] Servidor HTTP iniciado em http://localhost:#{port}"
-  server.start
-end
 
 # Start event processing thread to handle Slack events
 event_processor_thread = Thread.new do
@@ -380,6 +375,26 @@ event_processor_thread = Thread.new do
   end
 end
 
+# ── STARTUP ──
+
+# 1) Launch WEBrick in the background
+server_thread = Thread.new do
+  puts "[INIT] Servidor HTTP iniciado em http://localhost:#{port}"
+  server.start
+end
+
+# 2) Conditionally start Slack Socket Mode (only if token is set)
+if ENV['SLACK_APP_LEVEL_TOKEN']
+  slack_token = ENV.fetch('SLACK_APP_LEVEL_TOKEN')
+  puts "[SLACK] Initializing Slack WebSocket…"
+  start_socket(slack_token)
+else
+  puts "[SLACK] No SLACK_APP_LEVEL_TOKEN provided, skipping Socket Mode startup."
+end
+
+# 3) Wait for WEBrick to finish (this keeps the process alive for smoke tests)
+server_thread.join
+
 # Trap de interrupção para encerrar o servidor corretamente
 trap('INT') do
   puts "[SHUTDOWN] Closing Slack socket"
@@ -393,7 +408,41 @@ def attach_handlers(ws, token)
     $backoff = 1                 # reset back-off timer
   end
 
+  # Initialize ping timer for this WebSocket connection
+  ping_timer = nil
+  last_activity = Time.now
+  ping_interval = 10 # seconds
+  
+  # Set up ping timer to keep the connection alive
+  ping_timer = Thread.new do
+    puts "[SLACK PING] timer started (interval=#{ping_interval}s)"
+    begin
+      loop do
+        puts "[SLACK PING] checking ping loop at #{Time.now}"
+        sleep 1 # Check every second
+        
+        # Check if we need to send a ping
+        if Time.now - last_activity >= ping_interval
+          ping_payload = { type: 'ping', ts: Time.now.to_f }.to_json
+          begin
+            ws.send(ping_payload)
+            puts "[SLACK PING] Sent ping at #{Time.now}"
+            last_activity = Time.now
+          rescue => e
+            puts "[SLACK PING] Error sending ping: #{e.message}"
+          end
+        end
+      end
+    rescue => e
+      puts "[SLACK PING] Ping timer error: #{e.message}"
+    end
+  end
+  ping_timer.abort_on_exception = true
+  
   ws.on :message do |msg|
+    # Reset activity timer on any incoming message
+    last_activity = Time.now
+    
     # 1. Filtrar pings triviais
     if msg.data.to_s.start_with?("Ping from")
       puts "[SLACK PING] #{msg.data}"
@@ -421,6 +470,11 @@ def attach_handlers(ws, token)
       reason = data.dig('reason') || 'unknown'
       retry_after = data.dig('retry', 'retry_after') || 5
       puts "[SLACK] Disconnect: #{reason} – retry in #{retry_after}s"
+      puts "[SLACK DEBUG] Full disconnect payload: #{data.to_json}"
+      
+      # Kill the ping timer
+      ping_timer.kill if ping_timer
+      
       ws.close
       sleep retry_after
     when 'events_api'
@@ -444,12 +498,17 @@ def attach_handlers(ws, token)
   end
 
   ws.on :close do |e|
-    puts "[SLACK CLOSE] #{e}"
+    puts "[SLACK CLOSE] Code: #{e.code.inspect}, Reason: #{e.reason.inspect}"
+    puts "[SLACK RECONNECT] scheduling reconnect in #{$backoff}s"
     $slack_ws = nil
 
     # Slack may still be cleaning up the previous socket – wait longer
     sleep $backoff
-    $backoff = [$backoff * 2, 30].min   # back-off up to 30 s
+    
+    # Exponential backoff with jitter (±20%)
+    jitter_factor = 1.0 + rand(-0.2..0.2)
+    $backoff = [($backoff * 2 * jitter_factor).round(1), 30].min   # back-off up to 30 s
+    
     puts "[SLACK] Reconnecting in #{$backoff}s…"
     start_socket(token)
   end
@@ -516,23 +575,44 @@ end
 
 def start_socket(token)
   $ws_mutex.synchronize do
+    # Don't try to reconnect if we already have an active connection
     return if $slack_ws && !$slack_ws.closed?
-    $slack_ws&.close # <-- force-close stale socket
-    url = open_socket_url(token)
-    $slack_ws = WebSocket::Client::Simple.connect(url)
-    attach_handlers($slack_ws, token)
-    $backoff = 1  # reset on success
+    
+    # Force close any stale socket
+    if $slack_ws
+      begin
+        $slack_ws.close
+        puts "[SLACK] Closed stale socket connection"
+      rescue => e
+        puts "[SLACK] Error closing stale socket: #{e.message}"
+      end
+    end
+    
+    # Always get a fresh URL for each connection attempt
+    begin
+      url = open_socket_url(token)
+      puts "[SLACK] Got fresh connection URL"
+      
+      # Connect with the new URL
+      $slack_ws = WebSocket::Client::Simple.connect(url)
+      puts "[SLACK] Created new WebSocket connection"
+      
+      # Attach handlers to the new connection
+      attach_handlers($slack_ws, token)
+      
+      # We don't reset backoff here - we do it in the :open handler
+      # to ensure it only happens on successful connection
+    rescue => e
+      puts "[SLACK] Connection error: #{e.message}"
+      # Schedule another reconnection attempt after backoff
+      Thread.new do
+        sleep $backoff
+        # Increase backoff with jitter, capped at 30s
+        jitter_factor = 1.0 + rand(-0.2..0.2)
+        $backoff = [($backoff * 2 * jitter_factor).round(1), 30].min
+        puts "[SLACK] Retrying connection in #{$backoff}s..."
+        start_socket(token)
+      end
+    end
   end
-end
-
-puts "[INIT] Iniciando Slack Socket Mode"
-
-# Obter token para Socket Mode
-token = ENV.fetch('SLACK_APP_LEVEL_TOKEN')
-
-begin
-  start_socket(token)
-  loop { sleep 1 }   # keep main thread alive
-rescue => e
-  puts "Erro ao obter URL: #{e.message}"
 end
