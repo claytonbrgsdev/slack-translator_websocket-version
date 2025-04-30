@@ -1,0 +1,17 @@
+services:
+  translator:
+    build: .
+    ports:
+      - "4567:4567"
+    env_file: .env
+    volumes:
+      - db-data:/app/db
+    networks:
+      - translation-network
+
+networks:
+  translation-network:
+    driver: bridge
+
+volumes:
+  db-data:

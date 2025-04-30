@@ -22,4 +22,6 @@ COPY . .
 RUN mkdir -p /app/db/migrations
 
 EXPOSE 4567
-CMD ["ruby", "server.rb"]
+
+# Use shell form to support better migration handling
+CMD /bin/bash -c 'bundle exec sequel -m db/migrations sqlite://db/messages.sqlite3 || echo "Migrations already up to date"; ruby server.rb'

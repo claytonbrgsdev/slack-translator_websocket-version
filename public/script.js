@@ -11,8 +11,6 @@ const previewText = document.getElementById('preview-text');
 const settingsBtn = document.getElementById('settings-btn');
 const settingsModal = document.getElementById('settings-modal');
 const closeSettings = document.getElementById('close-settings');
-const themeToggle = document.getElementById('theme-toggle');
-const darkThemeToggle = document.getElementById('dark-theme-toggle');
 const autoDetectToggle = document.getElementById('auto-detect');
 const directionOptions = document.getElementById('direction-options');
 const tabButtons = document.querySelectorAll('.tab-btn');
@@ -20,28 +18,149 @@ const tabContents = document.querySelectorAll('.tab-content');
 const swapColumnsBtn = document.getElementById('swap-columns');
 const toast = document.getElementById('toast');
 const channelSelect = document.getElementById('channel-select');
-const searchBtn = document.getElementById('search-btn');
 const notificationsBtn = document.getElementById('notifications-btn');
 
 // State
 let columnsSwapped = false;
 let messages = [];
+let autoTranslateEnabled = false; // Auto-translate toggle state
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
   renderMessages();
   initEventListeners();
   initSSEConnection(); // Iniciar conexão SSE com o servidor
-  
-  // Check for saved theme preference
-  const savedTheme = localStorage.getItem('theme');
-  if (savedTheme === 'dark') {
-    document.body.classList.add('dark-theme');
-    document.body.classList.remove('light-theme');
-    themeToggle.innerHTML = '<i class="fa-solid fa-sun"></i>';
-    darkThemeToggle.checked = true;
-  }
+  loadChannels(); // Carregar canais disponíveis do Slack e histórico de mensagens
 });
+
+// Function to load available Slack channels
+function loadChannels() {
+  fetch('/channels')
+    .then(response => {
+      if (!response.ok) {
+        throw new Error(`HTTP error ${response.status}`);
+      }
+      return response.json();
+    })
+    .then(data => {
+      if (data.channels && Array.isArray(data.channels)) {
+        // Get the channel select dropdown
+        const channelSelect = document.getElementById('channel-select');
+        
+        // Clear existing options except the default
+        while (channelSelect.options.length > 0) {
+          channelSelect.remove(0);
+        }
+        
+        // Add default option
+        const defaultOption = document.createElement('option');
+        defaultOption.value = '';
+        defaultOption.textContent = 'Selecione um canal...';
+        channelSelect.appendChild(defaultOption);
+        
+        // Sort channels alphabetically by name
+        data.channels.sort((a, b) => a.name.localeCompare(b.name));
+        
+        // Add each channel to the dropdown
+        data.channels.forEach(channel => {
+          const option = document.createElement('option');
+          option.value = channel.id;
+          option.textContent = `#${channel.name}`;
+          channelSelect.appendChild(option);
+        });
+        
+        // Check if there's a saved channel preference
+        const savedChannel = localStorage.getItem('selectedChannel');
+        if (savedChannel) {
+          channelSelect.value = savedChannel;
+          
+          // Load message history for the saved channel
+          loadMessageHistory(savedChannel);
+        }
+        
+        console.log(`[CHANNELS] Loaded ${data.channels.length} channels from Slack`);
+      } else {
+        console.error('[CHANNELS] Invalid response format:', data);
+      }
+    })
+    .catch(error => {
+      console.error('[CHANNELS] Error loading channels:', error);
+      
+      if (error.message.includes('403') || error.message.includes('missing_scope')) {
+        showToast(
+          'Permissão faltando',
+          'O bot precisa dos escopos "channels:read" (públicos) e "groups:read" (privados). ' +
+          'Reinstale o app no Slack e copie o novo token.',
+          true
+        );
+      } else {
+        showToast('Erro', 'Não foi possível carregar a lista de canais do Slack', true);
+      }
+    });
+}
+
+// Function to load message history for a channel
+function loadMessageHistory(channelId, limit = 50) {
+  if (!channelId) return;
+  
+  // Create a set to track processed message IDs
+  const processedMessages = new Set(messages.map(msg => msg.id));
+  
+  fetch(`/history?channel=${channelId}&limit=${limit}`)
+    .then(response => {
+      if (!response.ok) {
+        throw new Error(`HTTP error ${response.status}`);
+      }
+      return response.json();
+    })
+    .then(historyData => {
+      if (Array.isArray(historyData)) {
+        console.log(`[HISTORY] Received ${historyData.length} messages for channel ${channelId}`);
+        
+        // Process each message and add to messages array if not already present
+        const newMessages = [];
+        
+        historyData.forEach(item => {
+          if (item.type === 'slack_message' && item.data) {
+            const messageData = item.data;
+            
+            // Create standard message object
+            const historyMessage = {
+              id: messageData.id,
+              text: messageData.text || 'No text',
+              user: {
+                id: messageData.user?.id || 'unknown',
+                name: messageData.user?.name || 'Unknown User',
+                avatar: messageData.user?.avatar || (messageData.user?.name || 'UN').substring(0, 2).toUpperCase()
+              },
+              timestamp: messageData.timestamp,
+              isCurrentUser: false,
+              isNew: false
+            };
+            
+            // Only add if not already in the messages array
+            if (!processedMessages.has(historyMessage.id)) {
+              processedMessages.add(historyMessage.id);
+              newMessages.push(historyMessage);
+            }
+          }
+        });
+        
+        // Add to the beginning of messages array to show older messages first
+        if (newMessages.length > 0) {
+          messages = [...newMessages.reverse(), ...messages];
+          renderMessages();
+          console.log(`[HISTORY] Added ${newMessages.length} new messages to UI`);
+        }
+      } else {
+        console.error('[HISTORY] Invalid history data format:', historyData);
+      }
+    })
+    .catch(error => {
+      console.error('[HISTORY] Error loading message history:', error);
+      showToast('Erro', 'Não foi possível carregar o histórico de mensagens', true);
+    });
+}
 
 // Variáveis globais para gerenciar a conexão SSE
 let sseConnection = null;
@@ -99,7 +218,66 @@ let setupSSE = () => {
           console.log('[SSE CLIENT] Heartbeat recebido');
         } else {
           console.log('[SSE CLIENT] Received:', event.data);
-          console.log('[SSE TEST] Recebido no cliente:', event.data);
+          
+          // Try to parse the message as JSON
+          if (event.data && event.data.startsWith('{')) {
+            const data = JSON.parse(event.data);
+            
+            // Process Slack messages
+            if (data.type === 'slack_message' && data.data) {
+              const messageData = data.data;
+              
+              // Simple deduplication: skip only if the IDs match exactly
+              const dupe = messages.some(m => m.id === messageData.id);
+              if (dupe) {
+                console.log(`[SSE CLIENT] Ignoring duplicate message with ID: ${messageData.id}`);
+                return;
+              }
+              
+              // Create message object
+              const newMessage = {
+                id: messageData.id || Date.now().toString(),
+                text: messageData.text || 'No text',
+                user: {
+                  id: messageData.user?.id || 'unknown',
+                  name: messageData.user?.name || 'Unknown User',
+                  avatar: messageData.user?.avatar || (messageData.user?.name || 'UN').substring(0, 2).toUpperCase()
+                },
+                timestamp: messageData.timestamp || new Date().toISOString(),
+                isCurrentUser: false,
+                isNew: true
+              };
+              
+              // Auto-translate if enabled
+              if (autoTranslateEnabled && newMessage.text) {
+                console.log('[AUTO-TRANSLATE] Translating message:', newMessage.text);
+                fetchTranslation(newMessage.text)
+                  .then(translation => {
+                    newMessage.translated = translation;
+                    // Update the message in the array
+                    const index = messages.findIndex(m => m.id === newMessage.id);
+                    if (index !== -1) {
+                      messages[index].translated = translation;
+                      renderMessages();
+                    }
+                  })
+                  .catch(error => {
+                    console.error('[AUTO-TRANSLATE] Error:', error);
+                  });
+              }
+              
+              // Add to messages array
+              messages.unshift(newMessage);
+              
+              // Only keep the latest 50 messages
+              if (messages.length > 50) {
+                messages = messages.slice(0, 50);
+              }
+              
+              // Render updated messages
+              renderMessages();
+            }
+          }
         }
       } catch (e) {
         console.error('[SSE CLIENT] Erro ao processar mensagem:', e);
@@ -164,57 +342,70 @@ function initSlackEventSource() {
         
         // Evitar processamento de mensagens duplicadas
         if (processedMessages.has(messageId)) {
-          return;
+          return; // Skip already processed messages
         }
+        
+        // Mark as processed
         processedMessages.add(messageId);
         
-        // Limitar tamanho do cache de mensagens
-        if (processedMessages.size > 100) {
-          const entriesToRemove = processedMessages.size - 50;
-          const iterator = processedMessages.values();
-          for (let i = 0; i < entriesToRemove; i++) {
-            processedMessages.delete(iterator.next().value);
+        // Create user object
+        let userInfo = {
+          id: 'unknown',
+          name: 'Usuário Slack',
+          avatar: 'US'
+        };
+        
+        // Get user info if available
+        if (data.user) {
+          if (typeof data.user === 'string') {
+            userInfo = {
+              id: data.user,
+              name: `Usuário ${data.user.slice(-4)}`,
+              avatar: data.user.substring(0, 2).toUpperCase()
+            };
+          } else if (typeof data.user === 'object' && data.user !== null) {
+            userInfo = {
+              id: data.user.id || 'unknown',
+              name: data.user.name || 'Usuário Slack',
+              avatar: data.user.avatar || data.user.name?.substring(0, 2).toUpperCase() || 'US'
+            };
           }
         }
         
-        // Criar um objeto de mensagem com valores padrão seguros
+        // Create message object
         const message = {
           id: messageId,
           text: data.text || 'Mensagem sem texto',
           translated: data.translated || null,
           timestamp: data.timestamp || new Date().toISOString(),
+          user: userInfo,
           isCurrentUser: false,
-          isNew: true,
-          user: {
-            id: 'unknown',
-            name: 'Usuário Slack',
-            avatar: 'US'
-          }
+          isNew: true
         };
         
-        // Processar informações do usuário com segurança
-        if (data.user) {
-          if (typeof data.user === 'string') {
-            message.user = {
-              id: data.user,
-              name: `Usuário ${data.user.slice(-4)}`, 
-              avatar: 'U'
-            };
-          } else if (typeof data.user === 'object' && data.user !== null) {
-            message.user = {
-              id: data.user.id || 'unknown',
-              name: data.user.name || 'Usuário Slack',
-              avatar: data.user.avatar || 'US'
-            };
-          }
+        // Auto-translate if enabled and no translation already exists
+        if (autoTranslateEnabled && message.text && !message.translated) {
+          console.log('[AUTO-TRANSLATE] Translating message:', message.text);
+          fetchTranslation(message.text)
+            .then(translation => {
+              message.translated = translation;
+              renderMessages(); // Update UI with translation
+            })
+            .catch(error => {
+              console.error('[AUTO-TRANSLATE] Error:', error);
+            });
         }
         
-        // Só processar mensagens com texto
-        if (data.text) {
-          fetchTranslation(message);
-        } else {
-          console.log('Mensagem sem texto ignorada');
+        // Add to messages array
+        messages.unshift(message);
+        
+        // Limit array size
+        if (messages.length > 50) {
+          messages = messages.slice(0, 50);
         }
+        
+        // Render messages
+        renderMessages();
       } catch (error) {
         console.error('Erro ao processar mensagem SSE:', error);
       }
@@ -305,25 +496,26 @@ function initEventListeners() {
     settingsModal.classList.add('hidden');
   });
   
-  // Theme toggle
-  themeToggle.addEventListener('click', toggleTheme);
-  darkThemeToggle.addEventListener('change', (e) => {
-    if (e.target.checked) {
-      document.body.classList.add('dark-theme');
-      document.body.classList.remove('light-theme');
-      themeToggle.innerHTML = '<i class="fa-solid fa-sun"></i>';
-    } else {
-      document.body.classList.add('light-theme');
-      document.body.classList.remove('dark-theme');
-      themeToggle.innerHTML = '<i class="fa-solid fa-moon"></i>';
-    }
-    localStorage.setItem('theme', e.target.checked ? 'dark' : 'light');
-  });
+  // Tema removido
   
   // Auto detect toggle
   autoDetectToggle.addEventListener('change', (e) => {
     directionOptions.style.display = e.target.checked ? 'none' : 'block';
   });
+  
+  // Auto translate toggle
+  const autoTranslateToggle = document.getElementById('auto-translate-toggle');
+  autoTranslateToggle.addEventListener('change', (e) => {
+    autoTranslateEnabled = e.target.checked;
+    localStorage.setItem('autoTranslate', autoTranslateEnabled ? 'true' : 'false');
+  });
+  
+  // Load auto-translate preference
+  const savedAutoTranslate = localStorage.getItem('autoTranslate');
+  if (savedAutoTranslate === 'true') {
+    autoTranslateToggle.checked = true;
+    autoTranslateEnabled = true;
+  }
   
   // Tab switching
   tabButtons.forEach(button => {
@@ -366,33 +558,102 @@ function initEventListeners() {
       }
     }
   });
+  
+  // Highlight active channel when selected
+  channelSelect.addEventListener('change', () => {
+    highlightActiveChannel();
+    
+    // Save selected channel to localStorage
+    const selectedChannel = channelSelect.value;
+    if (selectedChannel) {
+      localStorage.setItem('selectedChannel', selectedChannel);
+      
+      // Clear existing messages when channel changes
+      messages = [];
+      renderMessages();
+      
+      // Load message history for the newly selected channel
+      loadMessageHistory(selectedChannel);
+    } else {
+      localStorage.removeItem('selectedChannel');
+    }
+  });
+  
+  // Initialize channel highlight
+  highlightActiveChannel();
 }
 
-// Toggle theme
-function toggleTheme() {
-  const isDark = document.body.classList.contains('dark-theme');
-  if (isDark) {
-    document.body.classList.remove('dark-theme');
-    document.body.classList.add('light-theme');
-    themeToggle.innerHTML = '<i class="fa-solid fa-moon"></i>';
-    darkThemeToggle.checked = false;
-  } else {
-    document.body.classList.add('dark-theme');
-    document.body.classList.remove('light-theme');
-    themeToggle.innerHTML = '<i class="fa-solid fa-sun"></i>';
-    darkThemeToggle.checked = true;
-  }
-  localStorage.setItem('theme', isDark ? 'light' : 'dark');
+// Highlight currently selected channel
+function highlightActiveChannel() {
+  // Add active class to channel select
+  channelSelect.classList.add('active');
+}
+
+// Funcionalidade de tema removida
+
+// Helper function to fetch translation
+function fetchTranslation(text, retryCount = 0) {
+  const direction = document.getElementById('pt-to-en').checked ? 'pt-to-en' : 'en-to-pt';
+  
+  return fetch('/translate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, direction })
+  })
+  .then(response => {
+    if (response.status === 503 && retryCount < 1) {
+      // Service unavailable - show toast and retry once
+      showToast('Erro', 'Serviço de tradução indisponível. Tentando novamente...', true);
+      
+      // Wait 2 seconds before retry
+      return new Promise(resolve => setTimeout(resolve, 2000))
+        .then(() => fetchTranslation(text, retryCount + 1));
+    }
+    
+    return response.json();
+  })
+  .then(data => {
+    if (data.error) {
+      throw new Error(data.error);
+    }
+    return data.translation || `Translation preview: ${text}`;
+  });
 }
 
 // Preview translation
 function previewTranslation() {
   if (messageInput.value.trim() === '') return;
   
-  // Simulate translation
-  const translatedText = `Tradução simulada para português: ${messageInput.value}`;
-  previewText.textContent = translatedText;
-  translationPreview.classList.remove('hidden');
+  // Add loading state
+  translateButton.classList.add('loading');
+  translateButton.disabled = true;
+  
+  // Get the input text
+  const text = messageInput.value.trim();
+  
+  // Use the fetchTranslation helper with retry
+  fetchTranslation(text)
+    .then(translation => {
+      // Display translation preview
+      previewText.textContent = translation;
+      translationPreview.classList.remove('hidden');
+      
+      // Remove loading state
+      translateButton.classList.remove('loading');
+      translateButton.disabled = false;
+    })
+    .catch(error => {
+      console.error('Error:', error);
+      showToast('Erro', 'Falha ao obter tradução. Serviço indisponível.', true);
+      
+      // Remove loading state on error
+      translateButton.classList.remove('loading');
+      translateButton.disabled = false;
+      
+      // Show fallback translation
+      previewText.textContent = `Tradução indisponível: ${text}`;
+      translationPreview.classList.remove('hidden');
+    });
 }
 
 // Send message
@@ -404,17 +665,37 @@ function sendMessage() {
   const direction = document.getElementById('pt-to-en').checked ? 'pt-to-en' : 'en-to-pt';
   const channel = channelSelect.value || 'general';
   
-  // Disable button while processing
+  // Add loading state and disable button while processing
+  sendButton.classList.add('loading');
   sendButton.disabled = true;
   
-  // First get translation
+  // First get translation with retry capability
   fetch('/translate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text, direction })
   })
+  .then(response => {
+    if (response.status === 503) {
+      // Service unavailable - show toast and retry once
+      showToast('Erro', 'Serviço de tradução indisponível. Tentando novamente...', true);
+      
+      // Wait 2 seconds then retry once
+      return new Promise(resolve => setTimeout(resolve, 2000))
+        .then(() => fetch('/translate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, direction })
+        }));
+    }
+    return response;
+  })
   .then(response => response.json())
   .then(data => {
+    if (data.error) {
+      throw new Error(data.error);
+    }
+    
     const translation = data.translation;
     
     // Now send to Slack
@@ -426,6 +707,9 @@ function sendMessage() {
   })
   .then(response => response.json())
   .then(data => {
+    // Log the raw JSON response from the server
+    console.log('[SLACK RESPONSE]', data);
+    
     if (data.ok) {
       // Add to local messages
       const newMessage = {
@@ -452,6 +736,10 @@ function sendMessage() {
       // Show toast notification
       showToast('Mensagem enviada', 'Sua mensagem foi traduzida e enviada com sucesso');
       
+      // Remove loading state
+      sendButton.classList.remove('loading');
+      sendButton.disabled = false;
+      
       // Remove new badge após 5 segundos
       setTimeout(() => {
         messages = messages.map(msg => {
@@ -463,13 +751,15 @@ function sendMessage() {
         renderMessages();
       }, 5000);
     } else {
-      showToast('Erro', `Falha ao enviar: ${data.error || 'erro desconhecido'}`);
+      showToast('Erro', `Falha ao enviar: ${data.error || 'erro desconhecido'}`, true);
+      sendButton.classList.remove('loading');
       sendButton.disabled = false;
     }
   })
   .catch(error => {
     console.error('Error:', error);
-    showToast('Erro', 'Falha na comunicação com o servidor');
+    showToast('Erro', 'Falha na comunicação com o servidor', true);
+    sendButton.classList.remove('loading');
     sendButton.disabled = false;
   });
 }
@@ -581,6 +871,17 @@ function createMessageElement(message, showTranslated) {
 // Format time
 function formatTime(timestamp) {
   const date = new Date(timestamp);
+  
+  // Check if date is invalid (fix for "Invalid Date" issue)
+  if (isNaN(date.getTime())) {
+    // Fallback: if it's ISO-8601, extract time portion (11:16)
+    if (typeof timestamp === 'string' && timestamp.includes('T')) {
+      return timestamp.slice(11, 16);
+    }
+    // If it's already in HH:MM format, just return it
+    return timestamp;
+  }
+  
   const now = new Date();
   const diffMs = now - date;
   const diffMins = Math.round(diffMs / 60000);
@@ -595,13 +896,28 @@ function formatTime(timestamp) {
 }
 
 // Show toast notification
-function showToast(title, description) {
+function showToast(title, description, isError = false) {
   const toastTitle = document.getElementById('toast-title');
   const toastDescription = document.getElementById('toast-description');
+  const toastIcon = toast.querySelector('.toast-content i');
   
   toastTitle.textContent = title;
   toastDescription.textContent = description;
   
+  // Remove any existing classes first
+  toast.classList.remove('hidden', 'error');
+  
+  // Add error class if specified
+  if (isError) {
+    toast.classList.add('error');
+    // Change icon to warning for errors
+    toastIcon.className = 'fa-solid fa-exclamation-circle';
+  } else {
+    // Use check icon for success
+    toastIcon.className = 'fa-solid fa-check-circle';
+  }
+  
+  // Show the toast
   toast.classList.remove('hidden');
   
   setTimeout(() => {
