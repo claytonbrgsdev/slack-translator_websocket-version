@@ -11,8 +11,6 @@ const previewText = document.getElementById('preview-text');
 const settingsBtn = document.getElementById('settings-btn');
 const settingsModal = document.getElementById('settings-modal');
 const closeSettings = document.getElementById('close-settings');
-const themeToggle = document.getElementById('theme-toggle');
-const darkThemeToggle = document.getElementById('dark-theme-toggle');
 const autoDetectToggle = document.getElementById('auto-detect');
 const directionOptions = document.getElementById('direction-options');
 const tabButtons = document.querySelectorAll('.tab-btn');
@@ -20,7 +18,6 @@ const tabContents = document.querySelectorAll('.tab-content');
 const swapColumnsBtn = document.getElementById('swap-columns');
 const toast = document.getElementById('toast');
 const channelSelect = document.getElementById('channel-select');
-const searchBtn = document.getElementById('search-btn');
 const notificationsBtn = document.getElementById('notifications-btn');
 
 // State
@@ -34,15 +31,6 @@ document.addEventListener('DOMContentLoaded', () => {
   initEventListeners();
   initSSEConnection(); // Iniciar conexão SSE com o servidor
   loadChannels(); // Carregar canais disponíveis do Slack e histórico de mensagens
-  
-  // Check for saved theme preference
-  const savedTheme = localStorage.getItem('theme');
-  if (savedTheme === 'dark') {
-    document.body.classList.add('dark-theme');
-    document.body.classList.remove('light-theme');
-    themeToggle.innerHTML = '<i class="fa-solid fa-sun"></i>';
-    darkThemeToggle.checked = true;
-  }
 });
 
 // Function to load available Slack channels
@@ -508,20 +496,7 @@ function initEventListeners() {
     settingsModal.classList.add('hidden');
   });
   
-  // Theme toggle
-  themeToggle.addEventListener('click', toggleTheme);
-  darkThemeToggle.addEventListener('change', (e) => {
-    if (e.target.checked) {
-      document.body.classList.add('dark-theme');
-      document.body.classList.remove('light-theme');
-      themeToggle.innerHTML = '<i class="fa-solid fa-sun"></i>';
-    } else {
-      document.body.classList.add('light-theme');
-      document.body.classList.remove('dark-theme');
-      themeToggle.innerHTML = '<i class="fa-solid fa-moon"></i>';
-    }
-    localStorage.setItem('theme', e.target.checked ? 'dark' : 'light');
-  });
+  // Tema removido
   
   // Auto detect toggle
   autoDetectToggle.addEventListener('change', (e) => {
@@ -614,22 +589,7 @@ function highlightActiveChannel() {
   channelSelect.classList.add('active');
 }
 
-// Toggle theme
-function toggleTheme() {
-  const isDark = document.body.classList.contains('dark-theme');
-  if (isDark) {
-    document.body.classList.remove('dark-theme');
-    document.body.classList.add('light-theme');
-    themeToggle.innerHTML = '<i class="fa-solid fa-moon"></i>';
-    darkThemeToggle.checked = false;
-  } else {
-    document.body.classList.add('dark-theme');
-    document.body.classList.remove('light-theme');
-    themeToggle.innerHTML = '<i class="fa-solid fa-sun"></i>';
-    darkThemeToggle.checked = true;
-  }
-  localStorage.setItem('theme', isDark ? 'light' : 'dark');
-}
+// Funcionalidade de tema removida
 
 // Helper function to fetch translation
 function fetchTranslation(text, retryCount = 0) {
