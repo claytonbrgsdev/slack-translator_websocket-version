@@ -396,14 +396,107 @@ body.dark-theme .preview-text {
   align-items: flex-end;
 }
 
-#message-input {
-  flex-grow: 1;
+.input-container {
+  position: relative;
+  width: 100%;
+}
+
+/* Message Input Toolbar */
+.input-toolbar {
+  display: flex;
+  align-items: center;
+  padding: 6px;
+  gap: 8px;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
-  padding: 0.75rem;
-  min-height: 5rem;
+  background-color: var(--input-bg);
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.05);
+}
+
+.input-toolbar textarea,
+.input-toolbar input[type="text"] {
+  flex: 1;
+  margin: 0;
+  padding: 8px;
+  border-radius: 4px;
+  border: none;
   background-color: var(--input-bg);
   color: var(--text-color);
+  min-height: 3rem;
+  resize: none;
+  outline: none;
+  width: 100%;
+}
+
+.input-toolbar button {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border: none;
+  background: none;
+  border-radius: 50%;
+  color: var(--gray-500);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color var(--transition), color var(--transition);
+}
+
+.input-toolbar button:hover:not(:disabled) {
+  background-color: var(--gray-200);
+  color: var(--primary);
+}
+
+body.dark-theme .input-toolbar button:hover:not(:disabled) {
+  background-color: var(--gray-700);
+  color: var(--primary-light);
+}
+
+.input-toolbar .btn-send {
+  margin-left: auto;
+  background-color: var(--primary);
+  color: white;
+}
+
+.input-toolbar .btn-send:hover:not(:disabled) {
+  background-color: var(--primary-dark);
+  color: white;
+}
+
+.input-toolbar .btn-send:disabled {
+  background-color: var(--gray-300);
+  cursor: not-allowed;
+}
+
+.input-toolbar .btn-attach, 
+.input-toolbar .btn-mic { 
+  order: 1; 
+}
+
+.input-toolbar .btn-translate { 
+  order: 2; 
+}
+
+.input-toolbar .btn-send { 
+  order: 3; 
+}
+
+/* Responsiveness for Input Toolbar */
+@media (max-width: 600px) {
+  .input-toolbar { 
+    flex-wrap: wrap; 
+  }
+  
+  .input-toolbar textarea,
+  .input-toolbar input[type="text"] { 
+    width: 100%; 
+    margin-bottom: 8px; 
+  }
+  
+  .input-toolbar .btn-send {
+    margin-left: auto;
+  }
 }
 
 .message-actions {
@@ -453,28 +546,6 @@ body.dark-theme .action-btn:hover:not(:disabled) {
 .primary-btn:hover:not(:disabled) {
   background-color: var(--primary-dark);
   color: white;
-}
-
-.message-toolbar {
-  display: flex;
-  gap: 0.5rem;
-  margin-top: 0.5rem;
-}
-
-.toolbar-btn {
-  width: 2rem;
-  height: 2rem;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--gray-500);
-  transition: background-color var(--transition), color var(--transition);
-}
-
-.toolbar-btn:hover {
-  background-color: var(--hover-bg);
-  color: var(--primary);
 }
 
 /* Modal */
