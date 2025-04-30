@@ -3,7 +3,7 @@ require 'json'
 
 module OllamaClient
   HOST  = ENV.fetch('OLLAMA_HOST', 'http://localhost:11434')
-  MODEL = ENV.fetch('OLLAMA_MODEL', 'llama3')
+  MODEL = ENV.fetch('OLLAMA_MODEL', 'llama3.1:8b')
 
   # Simple blocking completion with retry logic and timing
   def self.translate(text, dir)

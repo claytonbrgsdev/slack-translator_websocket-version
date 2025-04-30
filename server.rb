@@ -192,7 +192,7 @@ end
 server.mount_proc '/translate' do |req, res|
   payload = JSON.parse(req.body) rescue {}
   text    = payload['text'].to_s.strip
-  dir     = payload['direction'] || 'en-to-pt'
+  dir     = payload['direction'] || 'pt-to-en'
 
   translation = OllamaClient.translate(text, dir)
   res['Content-Type'] = 'application/json'
@@ -314,43 +314,56 @@ server.mount_proc '/send' do |req, res|
   begin
     payload = JSON.parse(req.body) rescue {}
     channel = payload['channel']
-    text    = payload['text']
-    
+    # Remove any use of text: text in JSON arguments here (use translated instead)
     # Log the full payload before sending
     puts "➡️ Sending payload to Slack: #{payload.to_json}"
-    
-    slack_token = ENV['SLACK_BOT_USER_OAUTH_TOKEN']
-    
+
+    # Executar tradução no servidor
+    original_text = payload['text'].to_s
+    direction     = payload['direction'] || 'pt-to-en'
+    translated    = OllamaClient.translate(original_text, direction)
+    puts "➡️ Translated text: #{translated}"
+
+    # Trocar token de bot pelo token de usuário
+    slack_token = ENV['SLACK_USER_OAUTH_TOKEN']
+
+    # Adicionar log antes de enviar
+    puts "➡️ Posting as user (token preview=#{slack_token[0..5]}…) text=#{translated}"
+
     begin
       resp = HTTP.headers(
               'Authorization' => "Bearer #{slack_token}",
               'Content-Type'  => 'application/json'
             ).post('https://slack.com/api/chat.postMessage',
-                  json: { channel: channel, text: text })
-      
+                  json: {
+                    channel: channel,
+                    text: translated,
+                    as_user: true
+                  })
+
       # Log the response status and body
       data = JSON.parse(resp.to_s)
       puts "⬅️ Slack responded: status=#{resp.status}, body=#{resp.body}"
-      
+
       # Log any error from Slack
       if data['ok'] == false
         puts "❌ Slack error: #{data['error']}"
       end
-      
+
       res['Content-Type'] = 'application/json'
       res.body = { ok: data['ok'], error: data['error'] }.to_json
     rescue => e
       # Catch and log any network or timeout errors
       puts "❌ Exception sending to Slack: #{e.class}: #{e.message}"
       puts e.backtrace.join("\n")
-      
+
       res['Content-Type'] = 'application/json'
       res.body = { ok: false, error: e.message }.to_json
     end
   rescue => e
     puts "❌ Unexpected error in /send endpoint: #{e.class}: #{e.message}"
     puts e.backtrace.join("\n")
-    
+
     res['Content-Type'] = 'application/json'
     res.body = { ok: false, error: "Server error: #{e.message}" }.to_json
   end
@@ -714,5 +727,3 @@ else
   # 3) Wait for WEBrick to finish (this keeps the process alive)
   server_thread.join
 end
-
-

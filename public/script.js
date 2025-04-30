@@ -239,21 +239,10 @@ let setupSSE = () => {
             if (data.type === 'slack_message' && data.data) {
               const messageData = data.data;
               
-              // Improved deduplication: Allow same messageId if timestamp differs by at least 5 seconds
-              const dupe = messages.some(m => {
-                if (m.id === messageData.id) {
-                  // If we have timestamps, check time difference
-                  if (m.timestamp && messageData.timestamp) {
-                    const timeDiff = Math.abs(Date.parse(messageData.timestamp) - Date.parse(m.timestamp));
-                    return timeDiff < 5000; // Considered duplicate only if less than 5 seconds apart
-                  }
-                  return true; // No timestamps to compare, consider duplicate
-                }
-                return false; // Different ID, not a duplicate
-              });
-              
+              // Simple deduplication: skip only if the IDs match exactly
+              const dupe = messages.some(m => m.id === messageData.id);
               if (dupe) {
-                console.log(`[SSE CLIENT] Ignoring similar message with ID: ${messageData.id} (within 5s window)`);
+                console.log(`[SSE CLIENT] Ignoring duplicate message with ID: ${messageData.id}`);
                 return;
               }
               
