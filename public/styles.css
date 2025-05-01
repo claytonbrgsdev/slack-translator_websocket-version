@@ -863,3 +863,14 @@ body.dark-theme .cancel-btn {
 body.dark-theme .cancel-btn:hover {
   background-color: var(--gray-600);
 }
+
+/* Message columns layout - horizontal side by side */
+.message-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  flex-grow: 1;
+  position: relative;
+  min-height: 0;
+}
+
