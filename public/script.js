@@ -517,6 +517,21 @@ function initEventListeners() {
   // Preview translation
   translateButton.addEventListener('click', previewTranslation);
   
+  // Confirm translation button
+  document.getElementById('confirm-translation').addEventListener('click', sendConfirmedTranslation);
+  
+  // Cancel translation button
+  document.getElementById('cancel-translation').addEventListener('click', () => {
+    // Hide preview and reset translation data
+    translationPreview.classList.add('hidden');
+    currentTranslation = {
+      original: '',
+      translated: '',
+      direction: '',
+      channel: ''
+    };
+  });
+  
   // Settings modal
   settingsBtn.addEventListener('click', () => {
     settingsModal.classList.remove('hidden');
@@ -692,6 +707,14 @@ function fetchTranslation(text, retryCount = 0) {
   });
 }
 
+// Store the current translation for confirmation
+let currentTranslation = {
+  original: '',
+  translated: '',
+  direction: '',
+  channel: ''
+};
+
 // Preview translation
 function previewTranslation() {
   if (messageInput.value.trim() === '') return;
@@ -703,9 +726,21 @@ function previewTranslation() {
   // Get the input text
   const text = messageInput.value.trim();
   
+  // Get selected direction from settings
+  const direction = document.getElementById('pt-to-en').checked ? 'pt-to-en' : 'en-to-pt';
+  const channel = channelSelect.value || 'general';
+  
+  // Store current values in the global object
+  currentTranslation.original = text;
+  currentTranslation.direction = direction;
+  currentTranslation.channel = channel;
+  
   // Use the fetchTranslation helper with retry
   fetchTranslation(text)
     .then(translation => {
+      // Store the translation
+      currentTranslation.translated = translation;
+      
       // Display translation preview
       previewText.textContent = translation;
       translationPreview.classList.remove('hidden');
@@ -713,6 +748,10 @@ function previewTranslation() {
       // Remove loading state
       translateButton.classList.remove('loading');
       translateButton.disabled = false;
+      
+      // Show send button in preview
+      document.getElementById('confirm-translation').style.display = 'inline-flex';
+      document.getElementById('cancel-translation').style.display = 'inline-flex';
     })
     .catch(error => {
       console.error('Error:', error);
@@ -725,64 +764,46 @@ function previewTranslation() {
       // Show fallback translation
       previewText.textContent = `Tradução indisponível: ${text}`;
       translationPreview.classList.remove('hidden');
+      
+      // Still allow the user to confirm if they want to
+      currentTranslation.translated = text; // Use original as fallback
+      document.getElementById('confirm-translation').style.display = 'inline-flex';
+      document.getElementById('cancel-translation').style.display = 'inline-flex';
     });
 }
 
-// Send message
+// Send message - now just triggers translation preview
 function sendMessage() {
-  const text = messageInput.value.trim();
-  if (text === '') return;
+  // Redirect to previewTranslation to show confirmation dialog
+  previewTranslation();
+}
+
+// Send confirmed translation to Slack
+function sendConfirmedTranslation() {
+  if (!currentTranslation.translated) {
+    showToast('Erro', 'Nenhuma tradução disponível para enviar', true);
+    return;
+  }
   
-  // Get selected direction from settings
-  const direction = document.getElementById('pt-to-en').checked ? 'pt-to-en' : 'en-to-pt';
-  const channel = channelSelect.value || 'general';
+  const { original, translated, channel } = currentTranslation;
   
-  // Add loading state and disable button while processing
-  sendButton.classList.add('loading');
-  sendButton.disabled = true;
+  // Add loading state to confirm button
+  const confirmBtn = document.getElementById('confirm-translation');
+  confirmBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Enviando...';
+  confirmBtn.disabled = true;
   
-  // First get translation with retry capability
-  fetch('/translate', {
+  // Try to get user ID from localStorage or use a default
+  const user_id = localStorage.getItem('slack_user_id') || 'current-user';
+  
+  // Send to Slack
+  fetch('/send', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, direction })
-  })
-  .then(response => {
-    if (response.status === 503) {
-      // Service unavailable - show toast and retry once
-      showToast('Erro', 'Serviço de tradução indisponível. Tentando novamente...', true);
-      
-      // Wait 2 seconds then retry once
-      return new Promise(resolve => setTimeout(resolve, 2000))
-        .then(() => fetch('/translate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text, direction })
-        }));
-    }
-    return response;
-  })
-  .then(response => response.json())
-  .then(data => {
-    if (data.error) {
-      throw new Error(data.error);
-    }
-    
-    const translation = data.translation;
-    
-    // Now send to Slack
-    // Try to get user ID from localStorage or use a default
-    const user_id = localStorage.getItem('slack_user_id') || 'current-user';
-    
-    return fetch('/send', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        channel, 
-        text: translation, 
-        user_id: user_id 
-      })
-    });
+    body: JSON.stringify({ 
+      channel, 
+      text: translated, 
+      user_id: user_id 
+    })
   })
   .then(response => response.json())
   .then(data => {
@@ -793,8 +814,8 @@ function sendMessage() {
       // Add to local messages
       const newMessage = {
         id: Date.now().toString(),
-        text: text,
-        translated: data.translation || `Translation sent to Slack`,
+        text: original,
+        translated: translated,
         user: {
           id: 'current-user',
           name: 'You',
@@ -815,9 +836,18 @@ function sendMessage() {
       // Show toast notification
       showToast('Mensagem enviada', 'Sua mensagem foi traduzida e enviada com sucesso');
       
-      // Remove loading state
-      sendButton.classList.remove('loading');
-      sendButton.disabled = false;
+      // Reset UI state
+      sendButton.disabled = true;
+      confirmBtn.innerHTML = '<i class="fa-solid fa-check"></i> Confirmar e Enviar';
+      confirmBtn.disabled = false;
+      
+      // Reset translation data
+      currentTranslation = {
+        original: '',
+        translated: '',
+        direction: '',
+        channel: ''
+      };
       
       // Remove new badge após 5 segundos
       setTimeout(() => {
@@ -831,15 +861,19 @@ function sendMessage() {
       }, 5000);
     } else {
       showToast('Erro', `Falha ao enviar: ${data.error || 'erro desconhecido'}`, true);
-      sendButton.classList.remove('loading');
-      sendButton.disabled = false;
+      
+      // Reset button state
+      confirmBtn.innerHTML = '<i class="fa-solid fa-check"></i> Confirmar e Enviar';
+      confirmBtn.disabled = false;
     }
   })
   .catch(error => {
     console.error('Error:', error);
     showToast('Erro', 'Falha na comunicação com o servidor', true);
-    sendButton.classList.remove('loading');
-    sendButton.disabled = false;
+    
+    // Reset button state
+    confirmBtn.innerHTML = '<i class="fa-solid fa-check"></i> Confirmar e Enviar';
+    confirmBtn.disabled = false;
   });
 }
 
