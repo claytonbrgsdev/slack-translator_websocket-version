@@ -446,7 +446,7 @@ body.dark-theme .preview-text {
   color: var(--text-color);
 }
 
-.message-actions {
+.input-actions {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
