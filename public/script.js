@@ -43,6 +43,13 @@ document.addEventListener('DOMContentLoaded', () => {
     themeToggle.innerHTML = '<i class="fa-solid fa-sun"></i>';
     darkThemeToggle.checked = true;
   }
+  
+  // Load saved Slack User ID if available
+  const slackUserId = localStorage.getItem('slack_user_id');
+  if (slackUserId) {
+    document.getElementById('slack-user-id').value = slackUserId;
+    console.log('[SETTINGS] Loaded Slack User ID from storage:', slackUserId);
+  }
 });
 
 // Function to load available Slack channels
@@ -553,6 +560,20 @@ function initEventListeners() {
     autoTranslateEnabled = true;
   }
   
+  // Save Slack User ID when it changes
+  const slackUserIdInput = document.getElementById('slack-user-id');
+  slackUserIdInput.addEventListener('change', (e) => {
+    const userId = e.target.value.trim();
+    if (userId) {
+      localStorage.setItem('slack_user_id', userId);
+      console.log('[SETTINGS] Saved Slack User ID:', userId);
+      showToast('ID salvo', 'Seu ID de usuário do Slack foi salvo');
+    } else {
+      localStorage.removeItem('slack_user_id');
+      console.log('[SETTINGS] Removed Slack User ID from storage');
+    }
+  });
+  
   // Tab switching
   tabButtons.forEach(button => {
     button.addEventListener('click', () => {
@@ -750,10 +771,17 @@ function sendMessage() {
     const translation = data.translation;
     
     // Now send to Slack
+    // Try to get user ID from localStorage or use a default
+    const user_id = localStorage.getItem('slack_user_id') || 'current-user';
+    
     return fetch('/send', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ channel, text: translation })
+      body: JSON.stringify({ 
+        channel, 
+        text: translation, 
+        user_id: user_id 
+      })
     });
   })
   .then(response => response.json())
@@ -845,7 +873,21 @@ function createMessageElement(message, showTranslated) {
   
   const avatarEl = document.createElement('div');
   avatarEl.className = 'message-avatar';
-  avatarEl.textContent = message.user.avatar;
+  
+  // Check if avatar is a URL (starts with http/https)
+  if (typeof message.user.avatar === 'string' && message.user.avatar.match(/^https?:\/\//)) {
+    // Create an image element for the avatar
+    const avatarImg = document.createElement('img');
+    avatarImg.src = message.user.avatar;
+    avatarImg.alt = message.user.name;
+    avatarImg.className = 'user-avatar-img';
+    avatarEl.appendChild(avatarImg);
+  } else {
+    // Fallback to text initials if no valid URL is available
+    avatarEl.textContent = typeof message.user.avatar === 'string' ? 
+      message.user.avatar : 
+      (message.user.name || 'UN').substring(0, 2).toUpperCase();
+  }
   
   const contentEl = document.createElement('div');
   contentEl.className = 'message-content';
