@@ -679,8 +679,11 @@ function toggleTheme() {
 }
 
 // Helper function to fetch translation
-function fetchTranslation(text, retryCount = 0) {
-  const direction = document.getElementById('pt-to-en').checked ? 'pt-to-en' : 'en-to-pt';
+function fetchTranslation(text, forcedDirection = null, retryCount = 0) {
+  // Allow forcing a specific direction, otherwise get from UI
+  const direction = forcedDirection || 
+                   (document.getElementById('pt-to-en').checked ? 'pt-to-en' : 'en-to-pt');
+  console.log(`[TRANSLATION] Direction: ${direction}, Text: ${text.substring(0, 30)}...`);
   
   return fetch('/translate', {
     method: 'POST',
@@ -726,8 +729,12 @@ function previewTranslation() {
   // Get the input text
   const text = messageInput.value.trim();
   
-  // Get selected direction from settings
-  const direction = document.getElementById('pt-to-en').checked ? 'pt-to-en' : 'en-to-pt';
+  // Get selected direction from settings - explicitly force a check each time
+  // Log the radio button state to help diagnose the issue
+  const ptToEn = document.getElementById('pt-to-en').checked;
+  const direction = ptToEn ? 'pt-to-en' : 'en-to-pt';
+  console.log(`[PREVIEW] Translation direction: ${direction} (pt-to-en radio checked: ${ptToEn})`);
+  
   const channel = channelSelect.value || 'general';
   
   // Store current values in the global object
@@ -735,14 +742,27 @@ function previewTranslation() {
   currentTranslation.direction = direction;
   currentTranslation.channel = channel;
   
-  // Use the fetchTranslation helper with retry
-  fetchTranslation(text)
-    .then(translation => {
+  // Use the fetchTranslation helper with retry - explicitly pass the direction to avoid any issues
+  fetchTranslation(text, direction)
+    .then(response => {
+      if (!response.ok) {
+        throw new Error(`HTTP error ${response.status}`);
+      }
+      return response.json();
+    })
+    .then(data => {
+      if (data.error) {
+        throw new Error(data.error);
+      }
+      
+      // Log the received translation and direction
+      console.log(`[PREVIEW] Received translation with direction: ${data.direction || 'not specified'}`);
+      
       // Store the translation
-      currentTranslation.translated = translation;
+      currentTranslation.translated = data.translation;
       
       // Display translation preview
-      previewText.textContent = translation;
+      previewText.textContent = data.translation;
       translationPreview.classList.remove('hidden');
       
       // Remove loading state
@@ -761,8 +781,12 @@ function previewTranslation() {
       translateButton.classList.remove('loading');
       translateButton.disabled = false;
       
-      // Show fallback translation
-      previewText.textContent = `Tradução indisponível: ${text}`;
+      // Show fallback translation - keep the original text but clearly indicate the error
+      const errorText = direction === 'pt-to-en' ? 
+        `Translation unavailable: ${text}` : 
+        `Tradução indisponível: ${text}`;
+      
+      previewText.textContent = errorText;
       translationPreview.classList.remove('hidden');
       
       // Still allow the user to confirm if they want to

@@ -9,6 +9,7 @@ module OllamaClient
   def self.translate(text, dir)
     retries = 0
     started = Time.now
+    puts "[OLLAMA] Translation request with direction: #{dir}, text: #{text[0..30]}..."
     begin
       prompt = case dir
                when 'en-to-pt' then <<~TXT
@@ -25,7 +26,9 @@ module OllamaClient
 
                  "#{text}"
                TXT
-               else "Translate:\n\n\"#{text}\""
+               else 
+                 puts "[OLLAMA] WARNING: Unknown direction '#{dir}', defaulting to generic translation"
+                 "Translate:\n\n\"#{text}\""
                end
 
       resp = HTTP.post("#{HOST}/api/generate",
