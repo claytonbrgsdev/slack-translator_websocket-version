@@ -402,10 +402,11 @@ body.dark-theme .message.incoming .message-bubble {
 }
 
 .translation-preview {
-  background-color: var(--gray-100);
-  border-radius: var(--radius-sm);
-  padding: 0.75rem;
-  margin-bottom: 0.75rem;
+  padding: 0.5rem;
+  background-color: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  margin-bottom: 0.5rem;
 }
 
 body.dark-theme .translation-preview {
@@ -445,7 +446,7 @@ body.dark-theme .preview-text {
   color: var(--text-color);
 }
 
-.message-actions {
+.input-actions {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
@@ -820,3 +821,56 @@ input:checked + .toggle-slider:before {
   font-weight:700; 
   border-color:var(--primary); 
 }
+
+.preview-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  justify-content: flex-end;
+}
+
+.confirm-btn {
+  background-color: var(--primary);
+  color: white;
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.875rem;
+  transition: background-color 0.2s;
+}
+
+.confirm-btn:hover {
+  background-color: var(--primary-dark);
+}
+
+.cancel-btn {
+  background-color: var(--gray-300);
+  color: var(--gray-700);
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.875rem;
+  transition: background-color 0.2s;
+}
+
+.cancel-btn:hover {
+  background-color: var(--gray-400);
+}
+
+body.dark-theme .cancel-btn {
+  background-color: var(--gray-700);
+  color: var(--gray-300);
+}
+
+body.dark-theme .cancel-btn:hover {
+  background-color: var(--gray-600);
+}
+
+/* Message columns layout - horizontal side by side */
+.message-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  flex-grow: 1;
+  position: relative;
+  min-height: 0;
+}
+

@@ -190,18 +190,42 @@ end
 
 # Translation endpoint using Ollama
 server.mount_proc '/translate' do |req, res|
-  payload = JSON.parse(req.body) rescue {}
-  text    = payload['text'].to_s.strip
-  dir     = payload['direction'] || 'en-to-pt'
-
-  translation = OllamaClient.translate(text, dir)
-  res['Content-Type'] = 'application/json'
-  
-  if translation.start_with?('⚠️')
-    res.status = 503
-    res.body = { error: translation }.to_json
-  else
-    res.body = { translation: translation }.to_json
+  begin
+    payload = JSON.parse(req.body) rescue {}
+    text    = payload['text'].to_s.strip
+    dir     = payload['direction'] || 'en-to-pt'
+    
+    puts "[SERVER] Translation request received: direction=#{dir}, text=#{text[0..30]}..."
+    
+    if text.empty?
+      res['Content-Type'] = 'application/json'
+      res.status = 400
+      res.body = { error: 'Empty text' }.to_json
+      next
+    end
+    
+    # Ensure the direction is explicitly set and valid
+    unless ['en-to-pt', 'pt-to-en'].include?(dir)
+      puts "[SERVER] WARNING: Invalid direction '#{dir}', defaulting to 'en-to-pt'"
+      dir = 'en-to-pt'
+    end
+    
+    translation = OllamaClient.translate(text, dir)
+    res['Content-Type'] = 'application/json'
+    
+    if translation.start_with?('⚠️')
+      res.status = 503
+      res.body = { error: translation }.to_json
+    else
+      puts "[SERVER] Translation successful: '#{text[0..20]}...' -> '#{translation[0..20]}...'"
+      res.body = { translation: translation, direction: dir }.to_json
+    end
+  rescue => e
+    puts "[SERVER] Error in translation endpoint: #{e.message}"
+    puts e.backtrace.join("\n")
+    res['Content-Type'] = 'application/json'
+    res.status = 500
+    res.body = { error: "Server error: #{e.message}" }.to_json
   end
 end
 
@@ -314,19 +338,75 @@ server.mount_proc '/send' do |req, res|
   begin
     payload = JSON.parse(req.body) rescue {}
     channel = payload['channel']
-    text    = payload['text']
+    original_text = payload['text']
+    user_id = payload['user_id'] || ENV['SLACK_USER_ID'] # Get from payload or env variable as fallback
+    
+    # Always translate from Portuguese to English before sending to Slack
+    puts "[TRANSLATION FLOW] 🔄 Translating outgoing message from PT to EN: #{original_text}"
+    translated_text = OllamaClient.translate(original_text, 'pt-to-en')
+    puts "[TRANSLATION FLOW] ✅ Translation completed: #{original_text} → #{translated_text}"
+    
+    # Use the translated text for Slack
+    text = translated_text
     
     # Log the full payload before sending
-    puts "➡️ Sending payload to Slack: #{payload.to_json}"
+    puts "➡️ Sending payload to Slack: #{payload.to_json} (translated to: #{text})"
     
-    slack_token = ENV['SLACK_BOT_USER_OAUTH_TOKEN']
+    # Use the user OAuth token instead of the bot token
+    # This makes messages appear as coming directly from the user
+    slack_token = ENV['SLACK_USER_OAUTH_TOKEN']
+    
+    # Check if we have a valid user token
+    if slack_token && slack_token.start_with?('xoxp-')
+      puts "[SLACK AUTH] Using user OAuth token for posting as the user"
+      
+      # When using user OAuth token, we don't need to set username or icon_url
+      # as messages will appear as coming directly from the authenticated user
+      message_params = { channel: channel, text: text }
+    else
+      # Fallback to bot token if user token is not available
+      puts "[SLACK AUTH] User OAuth token not found, falling back to bot token"
+      slack_token = ENV['SLACK_BOT_USER_OAUTH_TOKEN']
+      
+      # Prepare message parameters for bot posting
+      message_params = { channel: channel, text: text }
+      
+      # If we have a user ID, fetch their profile to use their avatar
+      if user_id && user_id.start_with?('U')
+        begin
+          profile = SlackUserService.fetch_user_profile(user_id)
+          if profile
+            puts "[SLACK USER] Using profile for outgoing message: #{profile['real_name']} | Avatar: #{profile['image_72']}"
+            
+            # Add icon_url to show the user's avatar in the message
+            message_params[:icon_url] = profile['image_72']
+            message_params[:username] = profile['real_name']
+          end
+        rescue => e
+          puts "[SLACK USER] Error fetching profile for outgoing message: #{e.message}"
+        end
+      end
+    end
     
     begin
+      # Determine which API endpoint to use based on the token type
+      api_endpoint = 'https://slack.com/api/chat.postMessage'
+      
+      # Log the API endpoint and token type being used (without exposing the actual token)
+      token_type = slack_token.start_with?('xoxp-') ? 'user token' : 'bot token'
+      puts "[SLACK API] Sending message using #{token_type} to #{api_endpoint}"
+      
+      # Add as_user=true parameter when using user token to ensure message appears as the user
+      if slack_token.start_with?('xoxp-')
+        message_params[:as_user] = true
+      end
+      
+      # Send the request to Slack API
       resp = HTTP.headers(
               'Authorization' => "Bearer #{slack_token}",
               'Content-Type'  => 'application/json'
-            ).post('https://slack.com/api/chat.postMessage',
-                  json: { channel: channel, text: text })
+            ).post(api_endpoint,
+                  json: message_params)
       
       # Log the response status and body
       data = JSON.parse(resp.to_s)

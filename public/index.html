@@ -71,11 +71,19 @@
       <div id="translation-preview" class="translation-preview hidden">
         <p class="preview-title">Prévia da tradução:</p>
         <p id="preview-text" class="preview-text"></p>
+        <div class="preview-actions">
+          <button id="confirm-translation" class="action-btn confirm-btn">
+            <i class="fa-solid fa-check"></i> Confirmar e Enviar
+          </button>
+          <button id="cancel-translation" class="action-btn cancel-btn">
+            <i class="fa-solid fa-xmark"></i> Cancelar
+          </button>
+        </div>
       </div>
       
       <div class="message-input-wrapper">
         <textarea id="message-input" placeholder="Digite uma mensagem..."></textarea>
-        <div class="message-actions">
+        <div class="input-actions">
           <button id="translate-btn" class="action-btn" title="Checar tradução antes de enviar?">
             <i class="fa-solid fa-language"></i>
           </button>
@@ -191,6 +199,12 @@
                 <span>Tema escuro</span>
                 <p>Alternar entre tema claro e escuro</p>
               </div>
+            </div>
+            
+            <div class="setting-item">
+              <label for="slack-user-id">ID de Usuário do Slack</label>
+              <input type="text" id="slack-user-id" placeholder="Ex: U012AB3CDE">
+              <p class="setting-help">Seu ID de usuário do Slack (começa com U). Usado para exibir seu avatar nas mensagens enviadas.</p>
             </div>
             
             <div class="setting-item">
