@@ -13,7 +13,6 @@ const settingsModal = document.getElementById('settings-modal');
 const closeSettings = document.getElementById('close-settings');
 const themeToggle = document.getElementById('theme-toggle');
 const darkThemeToggle = document.getElementById('dark-theme-toggle');
-const autoDetectToggle = document.getElementById('auto-detect');
 
 const tabButtons = document.querySelectorAll('.tab-btn');
 const tabContents = document.querySelectorAll('.tab-content');
@@ -583,10 +582,6 @@ function initEventListeners() {
     localStorage.setItem('theme', e.target.checked ? 'dark' : 'light');
   });
   
-  // Auto detect toggle
-  autoDetectToggle.addEventListener('change', (e) => {
-
-  });
   
   // Auto translate toggle
   const autoTranslateToggle = document.getElementById('auto-translate-toggle');

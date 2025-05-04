@@ -27,7 +27,7 @@ module OllamaClient
         6. Preserve tone (formal/informal) per user’s style.
         7. Normalize exaggerated character repetitions (e.g. “helloooo” → “hello”).
         8. Do not include code tags, system metadata, or quotation marks around output.
-
+      9. Reinforcing, do not use quotation marks around output.
         "#{text}"
       TXT
 

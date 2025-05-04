@@ -1,239 +1,212 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SlackTranslator</title>
-  <link rel="stylesheet" href="styles.css">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-</head>
-<body class="light-theme">
-  <div class="container">
-    <!-- Header -->
-    <header class="header">
-      <div class="header-left">
-        <h1 class="app-title">
-          <i class="fa-solid fa-message-dots"></i>
-          SlackTranslator
-        </h1>
-        <div class="channel-selector">
-          <span class="channel-label">Canal:</span>
-          <select id="channel-select">
-  <!-- Opções de canais serão populadas dinamicamente via integração com a API do Slack -->
-</select>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SlackTranslator</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+    />
+  </head>
+  <body class="light-theme">
+    <div class="container">
+      <!-- Header -->
+      <header class="header">
+        <div class="header-left">
+          <h1 class="app-title">
+            <i class="fa-solid fa-message-dots"></i>
+            SlackTranslator
+          </h1>
+          <div class="channel-selector">
+            <span class="channel-label">Canal:</span>
+            <select id="channel-select">
+              <!-- Opções de canais serão populadas dinamicamente via integração com a API do Slack -->
+            </select>
+          </div>
         </div>
-      </div>
-      <div class="header-right">
-        <button id="search-btn" class="icon-btn" title="Buscar mensagens">
-          <i class="fa-solid fa-search"></i>
-        </button>
-        <button id="notifications-btn" class="icon-btn" title="Notificações">
-          <i class="fa-solid fa-bell"></i>
-        </button>
-        <button id="theme-toggle" class="icon-btn" title="Alternar tema">
-          <i class="fa-solid fa-moon"></i>
-        </button>
-        <button id="settings-btn" class="icon-btn" title="Configurações">
-          <i class="fa-solid fa-gear"></i>
-        </button>
-      </div>
-    </header>
+        <div class="header-right">
+          <button id="theme-toggle" class="icon-btn" title="Alternar tema">
+            <i class="fa-solid fa-moon"></i>
+          </button>
+          <button id="settings-btn" class="icon-btn" title="Configurações">
+            <i class="fa-solid fa-gear"></i>
+          </button>
+        </div>
+      </header>
 
-    <!-- Message Columns -->
-    <div class="message-columns">
-      <div class="column">
-        <div class="column-header">
-          <h2>Mensagens Originais</h2>
-          <span class="language-badge">EN</span>
+      <!-- Message Columns -->
+      <div class="message-columns">
+        <div class="column">
+          <div class="column-header">
+            <h2>Mensagens Originais</h2>
+            <span class="language-badge">EN</span>
+          </div>
+          <div class="message-list" id="original-messages">
+            <!-- Messages will be inserted here by JavaScript -->
+          </div>
         </div>
-        <div class="message-list" id="original-messages">
-          <!-- Messages will be inserted here by JavaScript -->
+
+        <button id="swap-columns" class="swap-btn" title="Trocar colunas">
+          <i class="fa-solid fa-arrow-right-arrow-left"></i>
+        </button>
+
+        <div class="column">
+          <div class="column-header">
+            <h2>Mensagens Traduzidas</h2>
+            <span class="language-badge">PT-BR</span>
+          </div>
+          <div class="message-list" id="translated-messages">
+            <!-- Messages will be inserted here by JavaScript -->
+          </div>
         </div>
       </div>
-      
-      <button id="swap-columns" class="swap-btn" title="Trocar colunas">
-        <i class="fa-solid fa-arrow-right-arrow-left"></i>
-      </button>
-      
-      <div class="column">
-        <div class="column-header">
-          <h2>Mensagens Traduzidas</h2>
-          <span class="language-badge">PT-BR</span>
+
+      <!-- Message Input -->
+      <div class="message-input-container">
+        <div id="translation-preview" class="translation-preview hidden">
+          <p class="preview-title">Prévia da tradução:</p>
+          <p id="preview-text" class="preview-text"></p>
+          <div class="preview-actions">
+            <button id="confirm-translation" class="action-btn confirm-btn">
+              <i class="fa-solid fa-check"></i> Confirmar e Enviar
+            </button>
+            <button id="cancel-translation" class="action-btn cancel-btn">
+              <i class="fa-solid fa-xmark"></i> Cancelar
+            </button>
+          </div>
         </div>
-        <div class="message-list" id="translated-messages">
-          <!-- Messages will be inserted here by JavaScript -->
+
+        <div class="message-input-wrapper">
+          <textarea
+            id="message-input"
+            placeholder="Digite uma mensagem..."
+          ></textarea>
+          <div class="input-actions">
+            <button
+              id="translate-btn"
+              class="action-btn"
+              title="Checar tradução antes de enviar?"
+            >
+              <i class="fa-solid fa-language"></i>
+            </button>
+            <button id="send-btn" class="action-btn primary-btn" disabled>
+              <i class="fa-solid fa-paper-plane"></i>
+            </button>
+          </div>
         </div>
       </div>
     </div>
 
-    <!-- Message Input -->
-    <div class="message-input-container">
-      <div id="translation-preview" class="translation-preview hidden">
-        <p class="preview-title">Prévia da tradução:</p>
-        <p id="preview-text" class="preview-text"></p>
-        <div class="preview-actions">
-          <button id="confirm-translation" class="action-btn confirm-btn">
-            <i class="fa-solid fa-check"></i> Confirmar e Enviar
-          </button>
-          <button id="cancel-translation" class="action-btn cancel-btn">
-            <i class="fa-solid fa-xmark"></i> Cancelar
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Configurações</h2>
+          <button id="close-settings" class="close-btn">
+            <i class="fa-solid fa-times"></i>
           </button>
         </div>
-      </div>
-      
-      <div class="message-input-wrapper">
-        <textarea id="message-input" placeholder="Digite uma mensagem..."></textarea>
-        <div class="input-actions">
-          <button id="translate-btn" class="action-btn" title="Checar tradução antes de enviar?">
-            <i class="fa-solid fa-language"></i>
-          </button>
-          <button id="send-btn" class="action-btn primary-btn" disabled>
-            <i class="fa-solid fa-paper-plane"></i>
-          </button>
-        </div>
-      </div>
-      
-      <div class="message-toolbar">
-        <button class="toolbar-btn" title="Inserir emoji">
-          <i class="fa-regular fa-face-smile"></i>
-        </button>
-        <button class="toolbar-btn" title="Anexar arquivo">
-          <i class="fa-solid fa-paperclip"></i>
-        </button>
-        <button class="toolbar-btn" title="Gravar áudio">
-          <i class="fa-solid fa-microphone"></i>
-        </button>
-      </div>
-    </div>
-  </div>
 
-  <!-- Settings Modal -->
-  <div id="settings-modal" class="modal hidden">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h2>Configurações</h2>
-        <button id="close-settings" class="close-btn">
-          <i class="fa-solid fa-times"></i>
-        </button>
-      </div>
-      
-      <div class="modal-body">
-        <div class="settings-tabs">
-          <button class="tab-btn active" data-tab="translation">Tradução</button>
-          <button class="tab-btn" data-tab="preferences">Preferências</button>
-        </div>
-        
-        <div id="translation-tab" class="tab-content active">
-          <div class="setting-group">
-            <h3>Direção da Tradução</h3>
-            
-            <div class="setting-item">
-              <label class="toggle">
-                <input type="checkbox" id="auto-detect">
-                <span class="toggle-slider"></span>
-              </label>
-              <div class="setting-info">
-                <span>Detecção automática</span>
-                <p>Detectar automaticamente o idioma das mensagens</p>
-              </div>
-            </div>
-            
-            <div id="settings-container">
-              <!-- Recebimento (Slack → App) -->
-              <div id="receive-options" data-flow="slack-to-app">
-                <h4>Recebimento (Slack → App)</h4>
-                <input type="radio" name="receive-from-lang" value="en" checked> Inglês →
-                <input type="radio" name="receive-to-lang" value="pt"> Português
+        <div class="modal-body">
+          <div class="settings-tabs">
+            <button class="tab-btn active" data-tab="translation">
+              Tradução
+            </button>
+            <button class="tab-btn" data-tab="preferences">Preferências</button>
+          </div>
+
+          <div id="translation-tab" class="tab-content active">
+            <div class="setting-group">
+              <h3>Direção da Tradução</h3>
+
+              <div id="settings-container">
+                <!-- Recebimento (Slack → App) -->
+                <div id="receive-options" data-flow="slack-to-app">
+                  <h4>Recebimento (Slack → App)</h4>
+                  <input
+                    type="radio"
+                    name="receive-from-lang"
+                    value="en"
+                    checked
+                  />
+                  Inglês →
+                  <input type="radio" name="receive-to-lang" value="pt" />
+                  Português
+                </div>
+
+                <!-- Envio (App → Slack) -->
+                <div id="send-options" data-flow="app-to-slack">
+                  <h4>Envio (App → Slack)</h4>
+                  <input
+                    type="radio"
+                    name="send-from-lang"
+                    value="pt"
+                    checked
+                  />
+                  Português →
+                  <input type="radio" name="send-to-lang" value="en" /> Inglês
+                </div>
               </div>
 
-              <!-- Envio (App → Slack) -->
-              <div id="send-options" data-flow="app-to-slack">
-                <h4>Envio (App → Slack)</h4>
-                <input type="radio" name="send-from-lang" value="pt" checked> Português →
-                <input type="radio" name="send-to-lang" value="en"> Inglês
-              </div>
-            </div>
-            
-            
-            <div class="setting-item">
-              <label for="pt-variant">Variante do Português</label>
-              <select id="pt-variant">
-                <option value="pt-BR">Português Brasileiro</option>
-                <option value="pt-PT">Português Europeu</option>
-              </select>
-            </div>
-            
-            <div class="setting-item">
-              <label class="toggle">
-                <input type="checkbox" id="auto-translate-toggle">
-                <span class="toggle-slider"></span>
-              </label>
-              <div class="setting-info">
-                <span>Traduzir automaticamente</span>
-                <p>Traduzir todas as mensagens recebidas sem necessidade de clique</p>
+              <div class="setting-item">
+                <label class="toggle">
+                  <input type="checkbox" id="auto-translate-toggle" />
+                  <span class="toggle-slider"></span>
+                </label>
+                <div class="setting-info">
+                  <span>Traduzir automaticamente</span>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-        
-        <div id="preferences-tab" class="tab-content">
-          <div class="setting-group">
-            <div class="setting-item">
-              <label class="toggle">
-                <input type="checkbox" id="notifications-toggle" checked>
-                <span class="toggle-slider"></span>
-              </label>
-              <div class="setting-info">
-                <span>Notificações</span>
-                <p>Receber notificações de novas mensagens</p>
+
+          <div id="preferences-tab" class="tab-content">
+            <div class="setting-group">
+              <div class="setting-item">
+                <label class="toggle">
+                  <input type="checkbox" id="dark-theme-toggle" />
+                  <span class="toggle-slider"></span>
+                </label>
+                <div class="setting-info">
+                  <span>Tema escuro</span>
+                  <p>Alternar entre tema claro e escuro</p>
+                </div>
               </div>
-            </div>
-            
-            <div class="setting-item">
-              <label class="toggle">
-                <input type="checkbox" id="dark-theme-toggle">
-                <span class="toggle-slider"></span>
-              </label>
-              <div class="setting-info">
-                <span>Tema escuro</span>
-                <p>Alternar entre tema claro e escuro</p>
-              </div>
-            </div>
-            
-            <div class="setting-item">
-              <label for="slack-user-id">ID de Usuário do Slack</label>
-              <input type="text" id="slack-user-id" placeholder="Ex: U012AB3CDE">
-              <p class="setting-help">Seu ID de usuário do Slack (começa com U). Usado para exibir seu avatar nas mensagens enviadas.</p>
-            </div>
-            
-            <div class="setting-item">
-              <label class="toggle">
-                <input type="checkbox" id="sound-toggle" checked>
-                <span class="toggle-slider"></span>
-              </label>
-              <div class="setting-info">
-                <span>Sons</span>
-                <p>Reproduzir sons para novas mensagens</p>
+
+              <div class="setting-item">
+                <label for="slack-user-id">ID de Usuário do Slack</label>
+                <input
+                  type="text"
+                  id="slack-user-id"
+                  placeholder="Ex: U012AB3CDE"
+                />
+                <p class="setting-help">
+                  Seu ID de usuário do Slack (começa com U). Usado para exibir
+                  seu avatar nas mensagens enviadas.
+                </p>
               </div>
             </div>
           </div>
         </div>
       </div>
     </div>
-  </div>
 
-  <!-- Toast Notification -->
-  <div id="toast" class="toast hidden">
-    <div class="toast-content">
-      <i class="fa-solid fa-check-circle"></i>
-      <div class="toast-message">
-        <span id="toast-title">Mensagem enviada</span>
-        <p id="toast-description">Sua mensagem foi traduzida e enviada com sucesso</p>
+    <!-- Toast Notification -->
+    <div id="toast" class="toast hidden">
+      <div class="toast-content">
+        <i class="fa-solid fa-check-circle"></i>
+        <div class="toast-message">
+          <span id="toast-title">Mensagem enviada</span>
+          <p id="toast-description">
+            Sua mensagem foi traduzida e enviada com sucesso
+          </p>
+        </div>
       </div>
+      <div class="toast-progress"></div>
     </div>
-    <div class="toast-progress"></div>
-  </div>
 
-  <script src="script.js"></script>
-</body>
+    <script src="script.js"></script>
+  </body>
 </html>
