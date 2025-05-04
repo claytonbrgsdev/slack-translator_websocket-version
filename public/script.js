@@ -285,12 +285,14 @@ let setupSSE = () => {
                 const fromLang = getReceiveFromLang();
                 const toLang = getReceiveToLang();
                 fetchTranslation(newMessage.text, flow, fromLang, toLang)
-                  .then(translation => {
-                    newMessage.translated = translation;
-                    // Update the message in the array
+                  .then(result => {
+                    // Extract actual text from result object or fallback to raw result
+                    const translatedText = (result && result.translation) ? result.translation : result;
+                    newMessage.translated = translatedText;
+                    // Update in messages array
                     const index = messages.findIndex(m => m.id === newMessage.id);
                     if (index !== -1) {
-                      messages[index].translated = translation;
+                      messages[index].translated = translatedText;
                       renderMessages();
                     }
                   })
@@ -423,8 +425,9 @@ function initSlackEventSource() {
           const fromLang = getReceiveFromLang();
           const toLang = getReceiveToLang();
           fetchTranslation(message.text, flow, fromLang, toLang)
-            .then(translation => {
-              message.translated = translation;
+            .then(result => {
+              const translatedText = (result && result.translation) ? result.translation : result;
+              message.translated = translatedText;
               renderMessages(); // Update UI with translation
             })
             .catch(error => {
