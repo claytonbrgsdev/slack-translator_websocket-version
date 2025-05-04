@@ -191,41 +191,58 @@ end
 # Translation endpoint using Ollama
 server.mount_proc '/translate' do |req, res|
   begin
+    puts "[TRANSLATE] Received request: #{req.body.inspect}"
+
+    # Parse request body
     payload = JSON.parse(req.body) rescue {}
-    text    = payload['text'].to_s.strip
-    dir     = payload['direction'] || 'en-to-pt'
-    
-    puts "[SERVER] Translation request received: direction=#{dir}, text=#{text[0..30]}..."
-    
-    if text.empty?
-      res['Content-Type'] = 'application/json'
+
+    # Validate required parameters
+    required_params = %w[text flow fromLang toLang]
+    missing = required_params.select { |p| payload[p].nil? }
+    unless missing.empty?
+      puts "[TRANSLATE] Missing parameters: #{missing.join(', ')}"
       res.status = 400
-      res.body = { error: 'Empty text' }.to_json
-      next
+      res['Content-Type'] = 'application/json'
+      res.body = { error: "Missing parameters: #{missing.join(', ')}" }.to_json
+      return
     end
-    
-    # Ensure the direction is explicitly set and valid
-    unless ['en-to-pt', 'pt-to-en'].include?(dir)
-      puts "[SERVER] WARNING: Invalid direction '#{dir}', defaulting to 'en-to-pt'"
-      dir = 'en-to-pt'
-    end
-    
-    translation = OllamaClient.translate(text, dir)
-    res['Content-Type'] = 'application/json'
-    
-    if translation.start_with?('⚠️')
+
+    # Get translation from Ollama
+    puts "[TRANSLATE] Calling Ollama service"
+    translation_response = OllamaClient.translate(
+      payload['text'],
+      payload['flow'],
+      payload['fromLang'],
+      payload['toLang']
+    )
+
+    if translation_response.nil?
+      puts "[TRANSLATE] Ollama returned empty response"
       res.status = 503
-      res.body = { error: translation }.to_json
-    else
-      puts "[SERVER] Translation successful: '#{text[0..20]}...' -> '#{translation[0..20]}...'"
-      res.body = { translation: translation, direction: dir }.to_json
+      res['Content-Type'] = 'application/json'
+      res.body = { error: 'Translation service unavailable' }.to_json
+      return
     end
-  rescue => e
-    puts "[SERVER] Error in translation endpoint: #{e.message}"
-    puts e.backtrace.join("\n")
+
+    # Construct standardized response
+    puts "[TRANSLATE] Successful translation"
     res['Content-Type'] = 'application/json'
+    res.body = {
+      translation: translation_response['translation'] || translation_response['text'] || translation_response.to_s,
+      direction: "#{payload['fromLang']}-to-#{payload['toLang']}",
+      timestamp: Time.now.iso8601
+    }.to_json
+
+  rescue => e
+    puts "[TRANSLATE ERROR] #{e.message}\n#{e.backtrace.join("\n")}"
     res.status = 500
-    res.body = { error: "Server error: #{e.message}" }.to_json
+    res['Content-Type'] = 'application/json'
+    res.body = {
+      error: 'Translation failed',
+      message: e.message,
+      params: req.body,
+      backtrace: (e.backtrace.first(3) if ENV['RACK_ENV'] == 'development')
+    }.to_json
   end
 end
 
@@ -338,12 +355,22 @@ server.mount_proc '/send' do |req, res|
   begin
     payload = JSON.parse(req.body) rescue {}
     channel = payload['channel']
-    original_text = payload['text']
+    original_text = payload['original'] || payload['text']
+    translated_text = payload['translated']
     user_id = payload['user_id'] || ENV['SLACK_USER_ID'] # Get from payload or env variable as fallback
     
-    # Always translate from Portuguese to English before sending to Slack
-    puts "[TRANSLATION FLOW] 🔄 Translating outgoing message from PT to EN: #{original_text}"
-    translated_text = OllamaClient.translate(original_text, 'pt-to-en')
+    # Extract flow and language parameters from the payload
+    flow     = payload['flow'] || 'app-to-slack'
+    from_lang = payload['fromLang'] || 'pt'
+    to_lang   = payload['toLang'] || 'en'
+    
+    if translated_text.nil? || translated_text.strip.empty?
+      # Fallback: translate on backend if not provided
+      translated_text = OllamaClient.translate(original_text, flow, from_lang, to_lang)
+      puts "[TRANSLATION FLOW] (Backend) Translated: #{original_text} → #{translated_text}"
+    else
+      puts "[TRANSLATION FLOW] (Frontend) Using provided translation: #{translated_text}"
+    end
     puts "[TRANSLATION FLOW] ✅ Translation completed: #{original_text} → #{translated_text}"
     
     # Use the translated text for Slack
@@ -794,5 +821,3 @@ else
   # 3) Wait for WEBrick to finish (this keeps the process alive)
   server_thread.join
 end
-
-

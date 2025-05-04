@@ -138,23 +138,22 @@
               </div>
             </div>
             
-            <div class="radio-group" id="direction-options">
-              <div class="radio-item">
-                <input type="radio" id="en-to-pt" name="direction" value="en-to-pt" checked>
-                <label for="en-to-pt">
-                  <span>Inglês → Português Brasileiro</span>
-                  <p>Mensagens do grupo em inglês, traduções em português</p>
-                </label>
+            <div id="settings-container">
+              <!-- Recebimento (Slack → App) -->
+              <div id="receive-options" data-flow="slack-to-app">
+                <h4>Recebimento (Slack → App)</h4>
+                <input type="radio" name="receive-from-lang" value="en" checked> Inglês →
+                <input type="radio" name="receive-to-lang" value="pt"> Português
               </div>
-              
-              <div class="radio-item">
-                <input type="radio" id="pt-to-en" name="direction" value="pt-to-en">
-                <label for="pt-to-en">
-                  <span>Português Brasileiro → Inglês</span>
-                  <p>Mensagens do grupo em português, traduções em inglês</p>
-                </label>
+
+              <!-- Envio (App → Slack) -->
+              <div id="send-options" data-flow="app-to-slack">
+                <h4>Envio (App → Slack)</h4>
+                <input type="radio" name="send-from-lang" value="pt" checked> Português →
+                <input type="radio" name="send-to-lang" value="en"> Inglês
               </div>
             </div>
+            
             
             <div class="setting-item">
               <label for="pt-variant">Variante do Português</label>

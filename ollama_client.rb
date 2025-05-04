@@ -6,30 +6,30 @@ module OllamaClient
   MODEL = ENV.fetch('OLLAMA_MODEL', 'llama3')
 
   # Simple blocking completion with retry logic and timing
-  def self.translate(text, dir)
+  def self.translate(text, flow, from_lang, to_lang)
     retries = 0
     started = Time.now
-    puts "[OLLAMA] Translation request with direction: #{dir}, text: #{text[0..30]}..."
+    dir_final = "#{from_lang}-to-#{to_lang}"
+    flow_label = flow == 'slack-to-app' ? 'Slack → App' : 'App → Slack'
+    puts "[OLLAMA] Flow=#{flow}, Direction=#{dir_final}, Text=#{text[0..30]}..."
     begin
-      prompt = case dir
-               when 'en-to-pt' then <<~TXT
-                 You are a professional translator.
-                 Translate ONLY the text between the quotes into Brazilian-Portuguese.
-                 Return **just** the translation, no explanations.
+      prompt = <<~TXT
+        You are a professional translator (#{flow_label}).
+        Translate ONLY the text between the quotes from #{from_lang.upcase} to #{to_lang.upcase}.
+        Return just the polished translation, no explanations.
+        
+        Additional formatting rules:
+        1. Ensure each sentence starts with uppercase and normal casing.
+        2. Use exactly one space after punctuation; trim leading/trailing whitespace.
+        3. Preserve paragraph breaks exactly.
+        4. Use proper local punctuation (en dash, curved quotes “ ”, ellipsis …).
+        5. In Portuguese, always include proper accents (ç, á, ã etc.).
+        6. Preserve tone (formal/informal) per user’s style.
+        7. Normalize exaggerated character repetitions (e.g. “helloooo” → “hello”).
+        8. Do not include code tags, system metadata, or quotation marks around output.
 
-                 "#{text}"
-               TXT
-               when 'pt-to-en' then <<~TXT
-                 You are a professional translator.
-                 Translate ONLY the text between the quotes into English.
-                 Return **just** the translation, no explanations.
-
-                 "#{text}"
-               TXT
-               else 
-                 puts "[OLLAMA] WARNING: Unknown direction '#{dir}', defaulting to generic translation"
-                 "Translate:\n\n\"#{text}\""
-               end
+        "#{text}"
+      TXT
 
       resp = HTTP.post("#{HOST}/api/generate",
                        json: { model: MODEL, 

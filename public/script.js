@@ -14,7 +14,7 @@ const closeSettings = document.getElementById('close-settings');
 const themeToggle = document.getElementById('theme-toggle');
 const darkThemeToggle = document.getElementById('dark-theme-toggle');
 const autoDetectToggle = document.getElementById('auto-detect');
-const directionOptions = document.getElementById('direction-options');
+
 const tabButtons = document.querySelectorAll('.tab-btn');
 const tabContents = document.querySelectorAll('.tab-content');
 const swapColumnsBtn = document.getElementById('swap-columns');
@@ -281,7 +281,10 @@ let setupSSE = () => {
               // Auto-translate if enabled
               if (autoTranslateEnabled && newMessage.text) {
                 console.log('[AUTO-TRANSLATE] Translating message:', newMessage.text);
-                fetchTranslation(newMessage.text)
+                const flow = document.getElementById('receive-options').dataset.flow;
+                const fromLang = getReceiveFromLang();
+                const toLang = getReceiveToLang();
+                fetchTranslation(newMessage.text, flow, fromLang, toLang)
                   .then(translation => {
                     newMessage.translated = translation;
                     // Update the message in the array
@@ -416,7 +419,10 @@ function initSlackEventSource() {
         // Auto-translate if enabled and no translation already exists
         if (autoTranslateEnabled && message.text && !message.translated) {
           console.log('[AUTO-TRANSLATE] Translating message:', message.text);
-          fetchTranslation(message.text)
+          const flow = document.getElementById('receive-options').dataset.flow;
+          const fromLang = getReceiveFromLang();
+          const toLang = getReceiveToLang();
+          fetchTranslation(message.text, flow, fromLang, toLang)
             .then(translation => {
               message.translated = translation;
               renderMessages(); // Update UI with translation
@@ -470,37 +476,54 @@ function initSlackEventSource() {
 }
 
 // Função para traduzir mensagens
-async function fetchTranslation(message) {
+async function fetchTranslation(
+  text,
+  flow = getFlow(),
+  fromLang = getSendFromLang(),
+  toLang = getSendToLang(),
+  retryCount = 0
+) {
+  console.log('[DEBUG] Translation Params:', { 
+    text: text.substring(0, 50) + (text.length > 50 ? '...' : ''),
+    flow,
+    fromLang, 
+    toLang
+  });
   try {
+    console.log('[OUTGOING TRANSLATE]', { text, flow, fromLang, toLang });
     const response = await fetch('/translate', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ text: message.text })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, flow, fromLang, toLang })
     });
+
+    if (!response.ok) throw new Error(`HTTP error ${response.status}`);
     
     const data = await response.json();
+    console.log('[DEBUG] Translation Response:', data);
     
-    // Atualizar a mensagem com a tradução
-    message.translated = data.translation || data.message || 'Erro ao traduzir';
-    
-    // Adicionar à lista de mensagens e renderizar
-    messages = [...messages, message];
-    renderMessages();
-    
-    // Remover a flag 'isNew' após alguns segundos
-    setTimeout(() => {
-      messages = messages.map(msg => {
-        if (msg.id === message.id) {
-          return { ...msg, isNew: false };
-        }
-        return msg;
-      });
-      renderMessages();
-    }, 5000);
-  } catch (err) {
-    console.error('Erro ao traduzir mensagem:', err);
+    // Handle different response formats
+    if (typeof data === 'string') {
+      return { translation: data, direction: `${fromLang}-to-${toLang}` };
+    } else if (data?.translation) {
+      return data;
+    } else if (data?.text) {
+      return { translation: data.text, direction: data.direction || `${fromLang}-to-${toLang}` };
+    } else {
+      console.warn('[WARNING] Unexpected response format:', data);
+      return { 
+        translation: JSON.stringify(data),
+        direction: `${fromLang}-to-${toLang}`,
+        originalResponse: data
+      };
+    }
+  } catch (error) {
+    if (retryCount < 1) {
+      console.log(`Retrying... (attempt ${retryCount + 1})`);
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      return fetchTranslation(text, flow, fromLang, toLang, retryCount + 1);
+    }
+    throw error;
   }
 }
 
@@ -515,22 +538,23 @@ function initEventListeners() {
   sendButton.addEventListener('click', sendMessage);
   
   // Preview translation
-  translateButton.addEventListener('click', previewTranslation);
+  translateButton.addEventListener('click', async () => {
+    try {
+      await previewTranslation();
+    } catch (error) {
+      console.error('Translation error:', error);
+    }
+  });
   
   // Confirm translation button
   document.getElementById('confirm-translation').addEventListener('click', sendConfirmedTranslation);
   
   // Cancel translation button
-  document.getElementById('cancel-translation').addEventListener('click', () => {
-    // Hide preview and reset translation data
-    translationPreview.classList.add('hidden');
-    currentTranslation = {
-      original: '',
-      translated: '',
-      direction: '',
-      channel: ''
-    };
-  });
+  document.querySelectorAll('#receive-options input, #send-options input')
+  .forEach(radio => radio.addEventListener('change', () => {
+    console.log('[SETTINGS] fromLang or toLang changed:', getSendFromLang(), getSendToLang());
+    if (!translationPreview.classList.contains('hidden')) previewTranslation();
+  }));
   
   // Settings modal
   settingsBtn.addEventListener('click', () => {
@@ -558,7 +582,7 @@ function initEventListeners() {
   
   // Auto detect toggle
   autoDetectToggle.addEventListener('change', (e) => {
-    directionOptions.style.display = e.target.checked ? 'none' : 'block';
+
   });
   
   // Auto translate toggle
@@ -679,35 +703,27 @@ function toggleTheme() {
 }
 
 // Helper function to fetch translation
-function fetchTranslation(text, forcedDirection = null, retryCount = 0) {
-  // Allow forcing a specific direction, otherwise get from UI
-  const direction = forcedDirection || 
-                   (document.getElementById('pt-to-en').checked ? 'pt-to-en' : 'en-to-pt');
-  console.log(`[TRANSLATION] Direction: ${direction}, Text: ${text.substring(0, 30)}...`);
-  
-  return fetch('/translate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, direction })
-  })
-  .then(response => {
-    if (response.status === 503 && retryCount < 1) {
-      // Service unavailable - show toast and retry once
-      showToast('Erro', 'Serviço de tradução indisponível. Tentando novamente...', true);
-      
-      // Wait 2 seconds before retry
-      return new Promise(resolve => setTimeout(resolve, 2000))
-        .then(() => fetchTranslation(text, retryCount + 1));
-    }
-    
-    return response.json();
-  })
-  .then(data => {
-    if (data.error) {
-      throw new Error(data.error);
-    }
-    return data.translation || `Translation preview: ${text}`;
-  });
+function getReceiveFromLang() {
+  const sel = document.querySelector('#receive-options input[name="receive-from-lang"]:checked');
+  return sel ? sel.value : 'en';
+}
+function getReceiveToLang() {
+  const sel = document.querySelector('#receive-options input[name="receive-to-lang"]:checked');
+  return sel ? sel.value : 'pt';
+}
+
+function getSendFromLang() {
+  const sel = document.querySelector('#send-options input[name="send-from-lang"]:checked');
+  return sel ? sel.value : 'pt';
+}
+function getSendToLang() {
+  const sel = document.querySelector('#send-options input[name="send-to-lang"]:checked');
+  return sel ? sel.value : 'en';
+}
+
+function getFlow() {
+  const container = document.querySelector('#send-options').dataset.flow;
+  return container;
 }
 
 // Store the current translation for confirmation
@@ -719,48 +735,38 @@ let currentTranslation = {
 };
 
 // Preview translation
-function previewTranslation() {
+async function previewTranslation() {
   if (messageInput.value.trim() === '') return;
   
   // Add loading state
   translateButton.classList.add('loading');
   translateButton.disabled = true;
   
-  // Get the input text
+  // Texto a traduzir
   const text = messageInput.value.trim();
   
-  // Get selected direction from settings - explicitly force a check each time
-  // Log the radio button state to help diagnose the issue
-  const ptToEn = document.getElementById('pt-to-en').checked;
-  const direction = ptToEn ? 'pt-to-en' : 'en-to-pt';
-  console.log(`[PREVIEW] Translation direction: ${direction} (pt-to-en radio checked: ${ptToEn})`);
+  // Definir fluxo e idiomas a partir das opções de envio
+  const flow = document.getElementById('send-options').dataset.flow || 'app-to-slack';
+  const fromLang = getSendFromLang();
+  const toLang = getSendToLang();
+  const direction = `${fromLang}-to-${toLang}`;
   
   const channel = channelSelect.value || 'general';
-  
-  // Store current values in the global object
-  currentTranslation.original = text;
-  currentTranslation.direction = direction;
-  currentTranslation.channel = channel;
-  
-  // Use the fetchTranslation helper with retry - explicitly pass the direction to avoid any issues
-  fetchTranslation(text, direction)
-    .then(response => {
-      if (!response.ok) {
-        throw new Error(`HTTP error ${response.status}`);
-      }
-      return response.json();
-    })
+
+  // Armazenar valores no objeto global para envio posterior
+  currentTranslation = {
+    original: text,
+    translated: '',
+    direction,
+    channel,
+    flow,
+    fromLang,
+    toLang
+  };
+
+  fetchTranslation(text, flow, fromLang, toLang)
     .then(data => {
-      if (data.error) {
-        throw new Error(data.error);
-      }
-      
-      // Log the received translation and direction
-      console.log(`[PREVIEW] Received translation with direction: ${data.direction || 'not specified'}`);
-      
-      // Store the translation
       currentTranslation.translated = data.translation;
-      
       // Display translation preview
       previewText.textContent = data.translation;
       translationPreview.classList.remove('hidden');
@@ -775,7 +781,7 @@ function previewTranslation() {
     })
     .catch(error => {
       console.error('Error:', error);
-      showToast('Erro', 'Falha ao obter tradução. Serviço indisponível.', true);
+      showErrorToast(`Failed to translate: ${error.message}`);
       
       // Remove loading state on error
       translateButton.classList.remove('loading');
@@ -808,34 +814,38 @@ function sendConfirmedTranslation() {
     showToast('Erro', 'Nenhuma tradução disponível para enviar', true);
     return;
   }
-  
-  const { original, translated, channel } = currentTranslation;
-  
+
+  const { original, translated, channel, flow, fromLang, toLang } = currentTranslation;
+
   // Add loading state to confirm button
   const confirmBtn = document.getElementById('confirm-translation');
   confirmBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Enviando...';
   confirmBtn.disabled = true;
-  
+
   // Try to get user ID from localStorage or use a default
   const user_id = localStorage.getItem('slack_user_id') || 'current-user';
-  
-  // Send to Slack
+
+  // Debug log immediately before sending
+  console.log('[OUTGOING SEND]', { channel, original, translated, user_id, flow, fromLang, toLang });
+
   fetch('/send', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ 
-      channel, 
-      text: translated, 
-      user_id: user_id 
+    body: JSON.stringify({
+      channel:    channel,
+      original:   original,
+      translated: translated,
+      user_id:    user_id,
+      flow:       flow,
+      fromLang:   fromLang,
+      toLang:     toLang
     })
   })
   .then(response => response.json())
   .then(data => {
-    // Log the raw JSON response from the server
     console.log('[SLACK RESPONSE]', data);
-    
     if (data.ok) {
-      // Add to local messages
+      // Success handling (unchanged)
       const newMessage = {
         id: Date.now().toString(),
         text: original,
@@ -849,22 +859,17 @@ function sendConfirmedTranslation() {
         isCurrentUser: true,
         isNew: true
       };
-      
       messages = [...messages, newMessage];
       renderMessages();
-      
       // Clear input and preview
       messageInput.value = '';
       translationPreview.classList.add('hidden');
-      
       // Show toast notification
       showToast('Mensagem enviada', 'Sua mensagem foi traduzida e enviada com sucesso');
-      
       // Reset UI state
       sendButton.disabled = true;
       confirmBtn.innerHTML = '<i class="fa-solid fa-check"></i> Confirmar e Enviar';
       confirmBtn.disabled = false;
-      
       // Reset translation data
       currentTranslation = {
         original: '',
@@ -872,7 +877,6 @@ function sendConfirmedTranslation() {
         direction: '',
         channel: ''
       };
-      
       // Remove new badge após 5 segundos
       setTimeout(() => {
         messages = messages.map(msg => {
@@ -884,18 +888,17 @@ function sendConfirmedTranslation() {
         renderMessages();
       }, 5000);
     } else {
+      // Error handling (unchanged)
       showToast('Erro', `Falha ao enviar: ${data.error || 'erro desconhecido'}`, true);
-      
       // Reset button state
       confirmBtn.innerHTML = '<i class="fa-solid fa-check"></i> Confirmar e Enviar';
       confirmBtn.disabled = false;
     }
   })
   .catch(error => {
-    console.error('Error:', error);
+    console.error('[SEND ERROR]', error);
     showToast('Erro', 'Falha na comunicação com o servidor', true);
-    
-    // Reset button state
+    // Reset button state (unchanged)
     confirmBtn.innerHTML = '<i class="fa-solid fa-check"></i> Confirmar e Enviar';
     confirmBtn.disabled = false;
   });
@@ -1076,4 +1079,6 @@ function showToast(title, description, isError = false) {
   }, 3000);
 }
 
-// Aqui será implementada a conexão com a API do Slack via WebSocket
+function showErrorToast(message) {
+  showToast('Erro', message, true);
+}
